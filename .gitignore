@@ -1,0 +1,73 @@
+# ==========================================
+# 1. ENVIRONMENT & SECRETS (HIGH RISK)
+# ==========================================
+.env
+.env.*
+!.env.example
+*.env
+secrets.json
+credentials.json
+*_config.json
+
+# ==========================================
+# 2. TOKENS, KEYS & CREDENTIALS
+# ==========================================
+*.pem
+*.key
+*.pfx
+*.p12
+*.asc
+*.gpg
+id_rsa
+id_ed25519
+.netrc
+.gh_token
+gh_auth*
+
+# ==========================================
+# 3. LOCAL DATA & DATABASE DUMPS
+# ==========================================
+data/
+*.csv
+*.json
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.pgdump
+*.sql.gz
+*.bak
+
+# ==========================================
+# 4. LOGS & CLEANING DUMPS
+# ==========================================
+cleaning_logs/*.log
+*.log
+
+# ==========================================
+# 5. PYTHON CACHE & VIRTUAL ENVS
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ==========================================
+# 6. IDE & SYSTEM FILES (MACOS / WINDOWS / VSCODE)
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
