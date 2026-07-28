@@ -46,3 +46,54 @@ additional new data source.
 schema or README — current v1.0 scope still describes the self-relative
 version. To be revisited once core data pipeline (nba_api, Sleeper API,
 nbainjuries) is functional.
+
+
+## Data Completeness Finding — nbainjuries Does Not Explain All Gaps
+
+Cross-checked Maxime Raynaud's known game log gaps (Oct 24, 26, 28, 29, 2025)
+against nbainjuries reports for those dates. Reports validated successfully
+for all four dates, but Raynaud does not appear in any of them — no
+Out/Questionable/Probable/Available designation filed.
+
+Conclusion: these gaps are not explained by injury/rest reporting, and are
+consistent with coach's-decision DNPs (roster/rotation calls), which fall
+outside the scope of what the official injury report tracks.
+
+Implication: the planned player_status/availability table needs a status
+value representing "no recorded reason" (e.g. unexplained/not designated),
+since not every gap in game_logs will have a corresponding entry in any of
+the three data sources. The team_schedule join remains the correct way to
+detect that a gap exists — nbainjuries only helps explain a subset of them.
+
+## Data Completeness Design — team_schedule Table (Proposed, Not Yet Built)
+
+**Problem:** game_logs only contains rows for games a player actually appeared
+in. Confirmed via Raynaud's Oct 24/26/28/29 gaps: no game log row, and no
+nbainjuries designation either — most likely coach's-decision DNPs, which
+fall outside what any current data source records directly.
+
+**Proposed fix:** a `team_schedule` table — every game a *team* played,
+independent of any individual player — pulled from nba_api's
+`leaguegamefinder` endpoint (filterable by team_id). This becomes the source
+of truth for "this game happened," decoupled from whether any specific
+player has a stat line for it.
+
+A player's full 82-game picture is then derived, not stored directly:
+
+    team_schedule (every game a team played)
+      LEFT JOIN game_logs ON game_id + player_id
+      -> row exists in game_logs  => player appeared
+      -> row missing               => check nbainjuries for that date/player
+           -> designation found    => explained absence (injury/rest)
+           -> no designation found => unexplained (likely coach's decision)
+
+**Why this order matters:** nbainjuries alone cannot generate the missing
+rows — it can only annotate a gap once team_schedule has already revealed
+that one exists. Treating nbainjuries as the primary mechanism (as originally
+scoped) would silently miss every coach's-decision DNP, since those never
+appear on the injury report at all.
+
+**Status:** Design only. team_schedule table not yet built; leaguegamefinder
+pulled for exploration only, not yet integrated into any script. To be
+implemented after core schema (players, teams, game_logs) is finalized in
+Postgres.
