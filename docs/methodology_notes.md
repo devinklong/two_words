@@ -97,3 +97,28 @@ appear on the injury report at all.
 pulled for exploration only, not yet integrated into any script. To be
 implemented after core schema (players, teams, game_logs) is finalized in
 Postgres.
+
+## Validation — team_schedule Join Confirmed in Pandas
+
+Built out the LEFT JOIN design in `03_explore_team_schedule.ipynb` using
+Sacramento's full 2025-26 regular season schedule (via `leaguegamefinder`,
+filtered to `season_type_nullable='Regular Season'` to exclude preseason)
+merged against Raynaud's cleaned game log.
+
+Confirmed both DataFrames span the identical date range (2025-10-22 to
+2026-04-12) before trusting the join as exhaustive — GAME_DATE originally
+compared as text (alphabetical, not chronological) and gave a misleading
+min/max; converting to pd.to_datetime() fixed the comparison. Worth carrying
+into schema design: GAME_DATE should be a DATE type in Postgres, not text,
+to avoid this class of silent sorting/comparison error.
+
+**Result:** the join found 8 unexplained gaps for Raynaud this season
+(Oct 24, 26, 28, 29; Nov 3, 11, 14, 16 — 2025), up from the 4 originally
+found by manually checking nbainjuries. Looped nbainjuries checks across
+all 8 dates automatically (not just the original 4) — none appear on any
+injury report, consistent with coach's-decision DNPs across the board.
+
+**Status:** team_schedule + LEFT JOIN approach validated in pandas against
+a real player/team pair. Confirms the design is sound and exhaustive within
+a single team-season. Not yet implemented as a script or applied to
+Postgres; still scoped to notebook exploration only.
