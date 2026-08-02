@@ -6,7 +6,7 @@ Converts raw team schedule DataFrame into a 3NF-compliant structure:
 - Reorders columns for readability using reorder_columns()
 """
 
-from scripts.reorder_columns import reorder_columns
+from reorder_columns import reorder_columns
 
 def clean_team_schedule(df, team_lookup):
     # Split MATCHUP into atomic columns
