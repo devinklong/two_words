@@ -32,3 +32,11 @@ SELECT * FROM game_logs;
 SELECT COUNT(*) FROM game_logs;
 
 SELECT COUNT(DISTINCT player_id) FROM game_logs;
+
+SELECT COUNT(*) FROM game_logs WHERE season_id = '22024';
+
+SELECT COUNT(*) FROM game_logs WHERE season_id = '22023';
+
+SELECT COUNT(*) FROM game_logs WHERE season_id = '22022';
+
+SELECT COUNT(*) FROM game_logs WHERE season_id = '22021';

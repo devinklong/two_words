@@ -28,3 +28,13 @@ WHERE p.full_name ILIKE '%raynaud%'
 ORDER BY gr.game_date;
 
 TRUNCATE TABLE gap_reasons;
+
+SELECT COUNT(*) FROM gap_reasons;
+
+SELECT g.player_id, g.game_id, g.team_id, g.game_date
+FROM team_schedule_gaps g
+LEFT JOIN gap_reasons gr 
+    ON gr.player_id = g.player_id AND gr.game_id = g.game_id
+WHERE gr.player_id IS NULL
+ORDER BY g.game_date
+LIMIT 20;
