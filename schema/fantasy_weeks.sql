@@ -1,11 +1,11 @@
--- Maps each season to its 27 fantasy weeks (24 regular season + 3 playoff),
+-- Maps each season to its 24 fantasy weeks (21 regular season + 3 playoff),
 -- Monday-Sunday, starting from the Monday of the week containing that
 -- season's actual first game (per team_schedule). Playoff byes for the top
--- 2 seeds affect WHICH TEAMS play in week 25, not the date boundaries
+-- 2 seeds affect WHICH TEAMS play in week 22, not the date boundaries
 -- themselves, so this table doesn't need to know about standings/byes at
 -- all — it's purely a date-to-week lookup.
 
-DROP TABLE IF EXISTS fantasy_weeks;
+DROP TABLE IF EXISTS fantasy_weeks CASCADE;
 
 CREATE TABLE fantasy_weeks (
     season_id       VARCHAR(10) NOT NULL,
@@ -37,26 +37,25 @@ SELECT
     n AS week_number,
     w.week1_start + (n - 1) * 7 AS week_start_date,
     w.week1_start + (n - 1) * 7 + 6 AS week_end_date,
-    (n > 24) AS is_playoff_week
+    (n > 21) AS is_playoff_week
 FROM week1_monday w
-CROSS JOIN generate_series(1, 27) AS n
+CROSS JOIN generate_series(1, 24) AS n
 ORDER BY w.season_id, n;
 
 -- =========================
 -- Verification
 -- =========================
 
--- Should be exactly 5 seasons x 27 weeks = 135 rows
+-- Should be exactly 5 seasons x 24 weeks = 120 rows
 SELECT COUNT(*) FROM fantasy_weeks;
 
--- 24 regular + 3 playoff per season, every season
+-- 21 regular + 3 playoff per season, every season
 SELECT season_id, is_playoff_week, COUNT(*)
 FROM fantasy_weeks
 GROUP BY season_id, is_playoff_week
 ORDER BY season_id, is_playoff_week;
 
--- Eyeball one season's full week list — confirm Monday starts, Sunday
--- ends, and no gaps/overlaps between consecutive weeks
+-- Eyeball one season's full week list
 SELECT * FROM fantasy_weeks
 WHERE season_id = '22024'
 ORDER BY week_number;
