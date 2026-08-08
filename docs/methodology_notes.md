@@ -129,6 +129,28 @@ Effect is smaller (~1.6%) but present in the full population too.
 "effective games remaining" correction — that's a planned refinement to the
 sliding-threshold model, not yet built.
 
+## Hold-Value Step Function — Empirical Lookup Table (8/8/26)
+
+Built `hold_value_step_function.sql`: for each `games_remaining_in_week`
+level, what % of the time did a later game that week actually score higher
+(`hold_wins_pct`), and by how much on average (`avg_score_delta_if_hold`).
+This is the step-function/lookup table called for above — no curve shape
+assumed yet.
+
+| games_remaining | hold_wins_pct | avg_score_delta_if_hold |
+|---|---|---|
+| 1 | 42.0% | -0.22 |
+| 2 | 58.6% | +4.36 |
+| 3 | 66.6% | +6.73 |
+| 4 | 70.2% (n=171, small sample) | +8.55 |
+
+Monotonic increase in both columns as games remaining grows — consistent
+with the sliding-threshold hypothesis. grw=1 sitting just under 50% is a
+reasonable anchor for the "last game of week" end of the curve.
+
+**Next:** decide how this lookup table translates into an actual threshold
+adjustment, then validate via the Phase 2 train/test backtest below.
+
 ## Open Items
 
 1. Phase 2 weekly-outcome backtest (the core remaining decision before the

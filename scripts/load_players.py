@@ -3,7 +3,7 @@ Populate the players table from nba_api's static player list.
 Same pandas -> psycopg2 pattern used for teams (04_load_teams.ipynb).
 
 Run from the project root:
-    python load_players.py
+    python scripts/load_players.py
 
 Prereq: schema/players.sql must have been run already (table exists, empty).
 """

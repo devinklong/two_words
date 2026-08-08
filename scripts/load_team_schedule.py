@@ -3,9 +3,12 @@ Populate team_schedule by pulling each team's regular season schedule via
 get_team_schedule(), cleaning with clean_team_schedule(), and bulk-inserting
 into Postgres.
 
-Prereq: fix_team_schedule_pk.sql has been run — PK must be (game_id, team_id),
-not game_id alone, or every team's second-side row for a game gets silently
-dropped by ON CONFLICT DO NOTHING.
+Prereq: schema/team_schedule.sql has been run — its CREATE TABLE already
+defines PK (game_id, team_id) directly. (Older copies of this table used a
+solo game_id PK, fixed via fix_team_schedule_pk.sql — not needed for a
+fresh setup, since the composite PK is now baked into team_schedule.sql
+itself.) Without the composite PK, every team's second-side row for a game
+gets silently dropped by ON CONFLICT DO NOTHING.
 
 Run from the project root:
     python scripts/load_team_schedule.py [SEASON]
