@@ -7,23 +7,6 @@
 -- effects are plausibly different (rest-management before vs. fatigue
 -- during) and shouldn't be assumed identical without checking.
 
-DROP VIEW IF EXISTS team_schedule_b2b_flags;
-
-CREATE VIEW team_schedule_b2b_flags AS
-SELECT
-    ts.*,
-    (ts.game_date - LAG(ts.game_date) OVER (
-        PARTITION BY ts.team_id, ts.season_id ORDER BY ts.game_date
-    )) = 1 AS is_second_night_of_b2b,
-    (LEAD(ts.game_date) OVER (
-        PARTITION BY ts.team_id, ts.season_id ORDER BY ts.game_date
-    ) - ts.game_date) = 1 AS is_first_night_of_b2b
-FROM team_schedule ts;
-
--- =========================
--- The actual comparison: real fantasy_score outcomes, B2B vs not
--- =========================
-
 SELECT
     CASE
         WHEN b2b.is_second_night_of_b2b THEN 'second_night_of_b2b'

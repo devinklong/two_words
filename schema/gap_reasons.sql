@@ -27,8 +27,6 @@ JOIN players p ON p.player_id = gr.player_id
 WHERE p.full_name ILIKE '%raynaud%'
 ORDER BY gr.game_date;
 
-TRUNCATE TABLE gap_reasons;
-
 SELECT COUNT(*) FROM gap_reasons;
 
 SELECT g.player_id, g.game_id, g.team_id, g.game_date
