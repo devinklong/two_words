@@ -148,14 +148,80 @@ Monotonic increase in both columns as games remaining grows — consistent
 with the sliding-threshold hypothesis. grw=1 sitting just under 50% is a
 reasonable anchor for the "last game of week" end of the curve.
 
-**Next:** decide how this lookup table translates into an actual threshold
-adjustment, then validate via the Phase 2 train/test backtest below.
+**Curve fit + bucketing (8/8/26):** confirmed the shape is NOT linear —
+diminishing marginal returns per additional game (grw 1→2: +16.6pp, grw
+2→3: +8.0pp, grw 3→4: +3.6pp), consistent with correlated rather than
+independent future performance within a week (tested and rejected a naive
+independence formula, `1-(1-p)^k`, which overshoots badly). Fit a
+saturating curve `y = a*(1-(1-b)^k)` via `scripts/fit_hold_value_curve.py`
+(`scipy.curve_fit`), then upgraded from one pooled curve to **two curves
+by player variance tier** (`player_variance_buckets`, NTILE(2) split on
+`stddev_fantasy_score` per season) — a single pooled curve treats a
+streaky player and a steady player identically, which defeats the point
+of a player-relative layer. Confirmed real signal, not noise: bucket gap
+widens with games remaining (1.8pp at grw=1 → 10.4pp at grw=4), and the
+original pooled curve sits almost exactly between the two bucketed
+curves, as expected.
+
+| games_remaining | bucket 1 (steadier) | bucket 2 (streakier) |
+|---|---|---|
+| 1 | 40.6% | 42.4% |
+| 2 | 56.2% | 61.9% |
+| 3 | 62.2% | 70.8% |
+| 4 | 64.5% | 74.9% |
+
+Implemented as `percentage_to_lock` (`schema/percentage_to_lock.sql`) =
+`1 - hold_win_probability(games_remaining, bucket)` — the complement,
+since higher should mean more reason to lock. Fixed at `1.0` when
+`games_remaining_in_week = 0` (no future games, no real decision).
+
+## v1.0 Complete — `game_lock_signal` (8/8/26)
+
+**Ownable pool calibrated:** `schema/ownable_player_pool.sql` implements
+`mean_fantasy_score + k*stddev >= threshold` with **k=1.25, threshold=35**
+— the stricter of the two Phase 1 grid options (37.3% clear rate),
+matching the earlier stated preference for fewer, higher-confidence locks
+over frequency. `games_played >= 20` floor for sample-size consistency
+with `player_variance_buckets`. Both constants named/commented as
+first-pass, pending Phase 2.
+
+**`game_lock_signal` decision logic** (`schema/game_lock_signal.sql`),
+restricted to the ownable pool:
+- `fantasy_score >= 35` → **LOCK**
+- Below 35, `games_remaining_in_week = 0` → **PASS** (never cleared the
+  bar, no more chances this week — look elsewhere, e.g. waivers)
+- Below 35, games remaining → **HOLD** (`percentage_to_lock` exposed as
+  the confidence figure on the row, not pre-baked into more categories)
+
+**Design correction during build:** the first version added a 4th branch
+— `percentage_to_lock` above some cutoff (tried 0.55, then 0.80) → LOCK
+anyway even below the bar. This was wrong, not just miscalibrated: it let
+genuinely bad scores (e.g. 10.85, nowhere near 35) get labeled LOCK
+purely because `games_remaining=0` fixes `percentage_to_lock` at 1.0 —
+backwards logic, since "no more chances to improve" is a reason to PASS
+on a bad score, not call it good. Removed the branch entirely rather than
+re-tuning the cutoff; the absolute bar now gates LOCK unconditionally,
+hold-value only ever chooses between HOLD/PASS below it. Also removed two
+never-validated cutoff constants from the design in the process.
+
+**Validation (8/8/26):** 15 players × 5 seasons (ranks 1, 11, 21, ..., 141
+by `avg_fantasy_score`, `tests/lock_signal_validation.sql`), 75
+player-seasons, 4,613 game rows. All 4 structural invariants held with
+zero violations (no LOCK below 35, no PASS with games remaining, no HOLD
+at games_remaining=0, no score≥35 without LOCK). LOCK% by rank is cleanly
+monotonic and consistent across all 5 seasons independently — ~98-100% at
+rank 1 down to ~15-20% by rank 141 — confirming the tool's actual
+recommendations track real player quality, not just passing structural
+checks.
 
 ## Open Items
 
-1. Phase 2 weekly-outcome backtest (the core remaining decision before the
-   model can be implemented) — needs weekly-matchup simulation logic that
-   doesn't exist yet.
+1. Phase 2 weekly-outcome backtest — the real validation step. Simulate
+   the lock/hold policy against historical weeks, compare to a
+   perfect-hindsight oracle and a naive baseline, grid-search/re-derive
+   k=1.25, threshold=35 (and the hold-value curve shape) rather than
+   treating today's first-pass values as final. Train on 2021-24,
+   validate on 2024-26.
 2. Incorporate the confirmed B2B effect into an "effective games remaining"
    correction rather than treating all remaining games as equal value.
 3. Sleeper API integration — needed to replace the ~150-player proxy pool
@@ -163,3 +229,12 @@ adjustment, then validate via the Phase 2 train/test backtest below.
 4. Parked for v2: team pace/advanced stats (`nba_api`'s
    `leaguedashteamstats`), position-based lock scoring, draft pick profile
    analysis.
+5. Injury-return uncertainty, not yet incorporated (8/9/26): unlike a B2B
+   (consistent small tax, same role/matchup), a return from injury is
+   inconsistent in direction — minutes restriction, rust, or a normal role
+   immediately are all plausible, so remaining-game decision points near an
+   injury return likely overstate true hold-value in the pooled table.
+   `gap_reasons` already has per-game injury-report status to test this —
+   worth re-running the hold-value step function split by recent
+   injury-report status to see if the curve shifts. Parked as a v1.1
+   refinement, same tier as the B2B correction (item 2), not a v1 blocker.
