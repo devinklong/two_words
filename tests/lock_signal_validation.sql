@@ -30,7 +30,7 @@ WITH ranked_players AS (
         pss.avg_fantasy_score,
         pss.stddev_fantasy_score,
         ROW_NUMBER() OVER (
-            PARTITION BY pss.season_id ORDER BY pss.avg_fantasy_score DESC
+            PARTITION BY pss.season_id ORDER BY pss.avg_fantasy_score DESC, pss.player_id
         ) AS rank_by_avg_score
     FROM player_season_fantasy_stats pss
 )
@@ -60,7 +60,7 @@ WITH ranked_players AS (
         pss.season_id,
         pss.full_name,
         ROW_NUMBER() OVER (
-            PARTITION BY pss.season_id ORDER BY pss.avg_fantasy_score DESC
+            PARTITION BY pss.season_id ORDER BY pss.avg_fantasy_score DESC, pss.player_id
         ) AS rank_by_avg_score
     FROM player_season_fantasy_stats pss
 ),
@@ -92,7 +92,7 @@ WITH ranked_players AS (
         pss.season_id,
         pss.full_name,
         ROW_NUMBER() OVER (
-            PARTITION BY pss.season_id ORDER BY pss.avg_fantasy_score DESC
+            PARTITION BY pss.season_id ORDER BY pss.avg_fantasy_score DESC, pss.player_id
         ) AS rank_by_avg_score
     FROM player_season_fantasy_stats pss
 ),
@@ -109,7 +109,7 @@ SELECT
     gls.game_date,
     gls.week_number,
     gls.games_remaining_in_week,
-    gls.variance_bucket,
+    gls.tier,
     gls.fantasy_score,
     gls.percentage_to_lock,
     gls.lock_signal
