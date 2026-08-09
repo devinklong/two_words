@@ -37,3 +37,34 @@ WHERE games_remaining_in_week >= 1
 GROUP BY games_remaining_in_week
 ORDER BY games_remaining_in_week;
 -- EXPECT: grw=1 -> 42.0%, grw=2 -> 58.6%, grw=3 -> 66.6%, grw=4 -> 70.2%
+
+-- 4. Bucketed lock signal — condensed to ONE LINE PER BUCKET (each
+-- bucket's whole curve packed into a single text column) instead of a
+-- wide games_remaining x bucket grid, specifically so it doesn't wrap in
+-- a terminal. Copy/paste-friendly for sharing results.
+
+-- 4a. Confirms the fit script actually ran and populated both buckets
+SELECT variance_bucket, a, b, fitted_at FROM hold_value_curve_params ORDER BY variance_bucket;
+-- EXPECT: 2 rows (bucket 1 and 2). Zero rows means
+-- scripts/fit_hold_value_curve.py hasn't been run yet.
+
+-- 4b. Each bucket's whole curve on one line
+SELECT
+    variance_bucket,
+    STRING_AGG(
+        games_remaining_in_week || ':' || ROUND(100 * (1 - avg_lock), 1) || '%',
+        ', ' ORDER BY games_remaining_in_week
+    ) AS curve_summary  -- e.g. "1:41.6%, 2:59.2%, 3:66.7%, 4:69.9%"
+FROM (
+    SELECT variance_bucket, games_remaining_in_week, AVG(percentage_to_lock) AS avg_lock
+    FROM game_fantasy_scores_weekly_lock_signal
+    WHERE games_remaining_in_week >= 1
+    GROUP BY variance_bucket, games_remaining_in_week
+) sub
+GROUP BY variance_bucket
+ORDER BY variance_bucket;
+-- EXPECT: 2 rows, curve_summary showing hold_wins_pct climbing with
+-- games_remaining for each bucket. Bucket 2 (streakier) should generally
+-- look meaningfully different from bucket 1 (steadier) -- if the two
+-- curves are nearly identical, the bucketing isn't adding real signal
+-- over the earlier pooled version.
