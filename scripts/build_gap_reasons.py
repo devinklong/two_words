@@ -154,8 +154,8 @@ def main():
     print(f"{len(annotated) - explained_count} likely coach's decisions (or unmatched).")
 
     if not ambiguous.empty:
-        log_path = "logs/ambiguous_gap_matches.csv"
-        os.makedirs("logs", exist_ok=True)
+        log_path = "cleaning_logs/ambiguous_gap_matches.csv"
+        os.makedirs("cleaning_logs", exist_ok=True)
         ambiguous.to_csv(log_path, index=False)
         print(f"\n{len(ambiguous)} ambiguous match(es) — logged to {log_path} for manual review.")
     else:

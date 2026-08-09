@@ -72,3 +72,4 @@ ehthumbs.db
 Thumbs.db
 .vscode/
 .idea/
+config/.env
