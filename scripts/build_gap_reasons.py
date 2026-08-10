@@ -1,24 +1,11 @@
 """
-Annotates every row in team_schedule_gaps with a reason, pulled from
-nbainjuries' daily injury report — matches the manual validation approach
-from 03_explore_team_schedule.ipynb, but fetches each date's report ONCE
-and reuses it for every player-gap on that date, instead of one live call
-per gap (which would mean 10,000+ redundant requests for the same handful
-of dates).
-
-Matching uses BOTH first and last name against the report's 'Player Name'
-column, not last name alone — last-name-only risks false matches/misses
-whenever two players share a surname on the same day's report (common
-enough across 530+ active players to matter at this scale). Ambiguous
-matches (still >1 row after both checks) are left unexplained and
-printed for manual review rather than guessed at.
-
-Prereqs:
-  - team_schedule_gaps view exists (schema/team_schedule_gaps_view.sql)
-  - gap_reasons table exists (schema/gap_reasons.sql)
-
-Run from the project root:
-    python scripts/build_gap_reasons.py
+Annotates team_schedule_gaps with a reason from nbainjuries' daily report,
+fetching each date's report ONCE and reusing it for every gap on that date
+(not one call per gap). Matches on first+last name together, since last
+name alone risks collisions across 530+ active players; still-ambiguous
+matches are left unexplained and logged for manual review, not guessed at.
+Prereqs: team_schedule_gaps view + gap_reasons table exist.
+Run: python scripts/build_gap_reasons.py
 """
 
 import os
@@ -36,7 +23,6 @@ SLEEP_SECONDS_BETWEEN_REPORT_CALLS = 0.5
 
 
 def fetch_gaps(conn) -> pd.DataFrame:
-    """Pull every gap, joined to players for last_name (used for report matching)."""
     query = """
         SELECT g.player_id, p.first_name, p.last_name, g.team_id, g.game_id, g.game_date
         FROM team_schedule_gaps g
@@ -86,9 +72,7 @@ def annotate_gaps(gaps_df: pd.DataFrame):
                 & report["Player Name"].str.contains(row.first_name, case=False, na=False)
             ]
             if len(match) > 1:
-                # Still ambiguous even with first+last — don't guess, leave unexplained
-                # and log it for manual review rather than silently picking a row or
-                # relying on terminal scrollback (which gets evicted on long runs).
+                # still ambiguous even with first+last -- don't guess, log for manual review
                 ambiguous.append({
                     "player_id": row.player_id,
                     "first_name": row.first_name,

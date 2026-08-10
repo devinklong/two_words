@@ -1,26 +1,11 @@
 """
-Phase 2 grid search v2 (8/9/26) -- REPLACES grid_search_lock_threshold.py.
-
-Fixes the population-drift problem the earlier version had: threshold was
-used for BOTH pool membership and the lock decision at once, so raising
-it silently swapped in a more elite population every step, making "edge
-over naive" partly just reflect "better players are better," not real
-decision-quality improvement.
-
-This version holds the POOL FIXED (K_POOL=1.25, T_POOL=35, unchanged from
-ownable_player_pool.sql) across the entire search, and instead searches
-the two constants in the NEW per-player lock decision
-(schema/lock_model/game_lock_signal.sql, Option B):
-  - ABSOLUTE_FLOOR: the flat minimum any player must clear
-  - CEILING_MULTIPLIER: how far above their OWN mean+stddev they need to
-    reach (0.0 = old flat-threshold behavior, included as a sanity anchor)
-
-Since the population never changes across the grid, pool size stays
-constant automatically -- no pool-size guardrail needed this time (that
-was only necessary because pool size itself was varying before).
-
-Run from the project root:
-    python scripts/grid_search_lock_decision.py
+Grid search for ABSOLUTE_FLOOR/CEILING_MULTIPLIER (game_lock_signal.sql).
+Holds the pool FIXED (K_POOL=1.25, T_POOL=35, unchanged) across the whole
+search and only varies the per-player lock decision -- an earlier version
+searched threshold for both pool membership and the lock decision at once,
+which let "edge over naive" partly just reflect a shrinking, more-elite
+population rather than real decision-quality improvement.
+Run: python scripts/grid_search_lock_decision.py
 """
 
 import itertools
@@ -33,7 +18,7 @@ K_POOL = 1.25
 T_POOL = 35
 
 ABSOLUTE_FLOOR_VALUES = [30, 32, 35, 38, 40]
-CEILING_MULTIPLIER_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
+CEILING_MULTIPLIER_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]  # 0.0 = old flat-threshold behavior, kept as a sanity anchor
 
 TRAIN_SEASONS = ('22021', '22022', '22023')
 REPLACEMENT_LEVEL = 30  # see methodology_notes.md's replacement-level assumption note
@@ -135,8 +120,7 @@ def run_grid_search():
 
     results_df = pd.DataFrame(results)
 
-    # Sanity check: pool size should be IDENTICAL across every row now,
-    # since the pool is fixed and only the lock decision varies
+    # Sanity check: pool size should be identical across every row, since it's fixed now
     pool_sizes = results_df["pool_player_seasons"].unique()
     if len(pool_sizes) == 1:
         print(f"\nSanity check passed: pool size constant at {int(pool_sizes[0])} "

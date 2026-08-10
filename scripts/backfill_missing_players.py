@@ -1,12 +1,8 @@
 """
-Backfills players who exist in game_logs but are missing from the players
-table — happens when nba_api's bundled static player list (used by
-load_players.py) hasn't yet caught up to very recent additions (late draft
-picks, two-way signees) that the LIVE endpoints (CommonTeamRoster,
-PlayerGameLog) already know about.
-
-Run from the project root:
-    python scripts/backfill_missing_players.py
+Backfills players present in game_logs but missing from players -- happens
+when nba_api's bundled static player list (load_players.py) hasn't caught
+up to very recent additions that the live endpoints already know about.
+Run: python scripts/backfill_missing_players.py
 """
 
 import time

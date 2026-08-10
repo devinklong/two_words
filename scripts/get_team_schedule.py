@@ -1,6 +1,6 @@
 """
-Pulls a single team's regular season schedule/game log from nba_api,
-scoped to a specific season, excluding preseason/playoffs/etc.
+Pulls one team's regular-season schedule/game log from nba_api for a given
+season, excluding preseason/playoffs.
 """
 
 from nba_api.stats.endpoints import leaguegamefinder

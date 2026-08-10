@@ -1,15 +1,10 @@
 """
-Phase 2 validation step v2 -- companion to grid_search_lock_decision.py.
-Reruns the same simulation for ONE chosen (floor, ceiling_multiplier)
-combo against the VALIDATE split (2024-26) only. Separate, manual script
-by design -- see grid_search_lock_threshold.py's original validate
-script for the full reasoning (same principle applies here).
-
-Run from the project root:
-    python scripts/validate_lock_decision.py FLOOR CEILING_MULTIPLIER
-
-Example:
-    python scripts/validate_lock_decision.py 35 0.5
+Reruns grid_search_lock_decision.py's simulation for ONE chosen
+(floor, ceiling_multiplier) against the VALIDATE split (2024-26) only.
+Deliberately separate and manual -- letting the search auto-validate would
+defeat the point of a held-out split.
+Run: python scripts/validate_lock_decision.py FLOOR CEILING_MULTIPLIER
+Example: python scripts/validate_lock_decision.py 35 0.5
 """
 
 import sys

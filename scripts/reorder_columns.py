@@ -1,7 +1,6 @@
 """
-Reusable utility to reorder DataFrame columns.
-Moves a list of columns to sit immediately after a specified anchor column,
-without needing to manually rebuild the full column list each time.
+Moves a list of DataFrame columns to sit immediately after a specified
+anchor column, without manually rebuilding the full column list.
 """
 
 def reorder_columns(df, columns_to_move, after_column):

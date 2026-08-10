@@ -1,35 +1,13 @@
 """
-REPLACES the old fit_hold_value_curve.py (variance-bucket based).
-
-Fits hold_wins_pct(k) = a*(1-(1-b)^k) PER TIER (elite/mid/lower, see
-player_tiers.sql), fit ONLY on the population the curve will actually be
-used for: games where fantasy_score < lock_bar (the player's own
-self-relative ceiling, GREATEST(35, avg + 0.5*stddev) -- MUST match
-game_lock_signal.sql's formula exactly) AND games_remaining_in_week
-BETWEEN 1 and 4.
-
-WHY THIS REPLACES THE OLD FIT (8/9/26): the old curve was fit on the
-FULL unconditioned population -- every game, regardless of whether it
-already cleared the player's own bar. Checked empirically
-(hold_value_by_tier_and_grw.sql) and found the old curve systematically
-UNDER-predicted actual hold value by 10-16 percentage points once
-restricted to only the games where the decision is actually live (below
-the player's own ceiling). That's a real selection-bias problem, not
-noise -- a below-a-player's-own-norm game is naturally much easier for a
-later game to beat than a typical game is, and the old curve had no way
-to know it was being applied to that specific subset. Refitting directly
-on the conditional population it's meant for fixes this properly instead
-of patching around the mismatch.
-
-Deliberately computes lock_bar and tier directly from
-player_season_fantasy_stats here, NOT from game_lock_signal -- avoids a
-circular dependency (this fit feeds INTO percentage_to_lock.sql, which
-feeds into game_lock_signal; it shouldn't depend on game_lock_signal's
-own output). The lock_bar formula below must be kept in sync with
-game_lock_signal.sql's CASE logic by hand if that ever changes.
-
-Run from the project root:
-    python scripts/fit_hold_value_curve_by_tier.py
+Fits hold_wins_pct(k) = a*(1-(1-b)^k) per player tier, on the CONDITIONAL
+population the curve is actually used for (games below the player's own
+lock_bar, games_remaining_in_week 1-4) -- fitting on the full unconditioned
+population was found to under-predict real hold value by 10-16pp. Computes
+lock_bar/tier directly from player_season_fantasy_stats (not from
+game_lock_signal) to avoid a circular dependency, since this fit feeds INTO
+percentage_to_lock.sql, which feeds game_lock_signal. The lock_bar formula
+below must be kept in sync with game_lock_signal.sql's CASE logic by hand.
+Run: python scripts/fit_hold_value_curve_by_tier.py
 """
 
 import numpy as np
@@ -62,11 +40,9 @@ tiered_pool AS (
     FROM ranked_pool
 ),
 full_week_games AS (
-    -- NO WHERE filter here -- the window function below needs every game
-    -- in the player's week, including ones that cleared their lock_bar,
-    -- or "best_remaining_score" can never see a player's actual spike
-    -- games as candidates. Same bug class as the original
-    -- hold_value_step_function.sql fix earlier this project.
+    -- no WHERE filter here: the window below needs every game in the
+    -- player's week, including ones that cleared their lock_bar, or
+    -- "best_remaining_score" can never see their actual spike games
     SELECT
         gfswe.player_id, gfswe.season_id, gfswe.week_number, gfswe.game_date,
         gfswe.games_remaining_in_week, gfswe.fantasy_score, tp.tier, tp.lock_bar
@@ -89,7 +65,7 @@ SELECT
     COUNT(*) AS decision_points,
     100.0 * SUM((best_remaining_score > fantasy_score)::INT) / COUNT(*) AS hold_wins_pct
 FROM with_future
-WHERE fantasy_score < lock_bar  -- filter to actual decision points ONLY after the window ran
+WHERE fantasy_score < lock_bar  -- filter to real decision points ONLY after the window ran
   AND games_remaining_in_week BETWEEN 1 AND 4
 GROUP BY tier, games_remaining_in_week
 ORDER BY tier, games_remaining_in_week;
@@ -145,11 +121,8 @@ def main():
         n = np.array([r[1] for r in rows], dtype=int)
         y = np.array([r[2] for r in rows], dtype=float) / 100.0
 
-        # Weight by sample size: a proportion from n=1665 should count far
-        # more than one from n=6. Standard error of a binomial proportion
-        # is sqrt(p*(1-p)/n) -- used as sigma so scipy trusts high-n points
-        # more. Floor sigma to avoid a divide-by-near-zero blowup on a
-        # point that happens to land exactly at 0% or 100%.
+        # Weight by sample size (binomial SE = sqrt(p(1-p)/n)) so scipy
+        # trusts high-n points more; sigma floored to avoid divide-by-near-zero
         sigma = np.sqrt(np.maximum(y * (1 - y), 0.01) / n)
 
         popt, _ = curve_fit(
@@ -162,10 +135,8 @@ def main():
         a, b = popt
         pred = saturating_curve(k, a, b)
         resid = y - pred
-        # Weighted R^2, consistent with the weighted fit above -- an
-        # unweighted R^2 over only 4 points lets a single near-noise
-        # small-sample point (e.g. n=6) dominate the metric even when the
-        # fit is excellent for the points covering 99%+ of real decisions.
+        # Weighted R^2 (matches the weighted fit) so one near-noise
+        # small-sample point (e.g. n=6) can't dominate the metric
         weights = 1 / sigma ** 2
         weighted_mean = np.sum(weights * y) / np.sum(weights)
         ss_res = np.sum(weights * resid ** 2)

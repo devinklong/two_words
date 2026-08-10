@@ -1,27 +1,9 @@
--- Phase 2, first pass: simulates actual banked weekly scores under the
--- CURRENT calibrated policy (k=1.25, threshold=35, bucketed hold-value
--- curve) vs. a perfect-hindsight oracle vs. naive baseline B (flat
--- median threshold, 30.3, no hold-value modeling at all). This is the
--- harness the eventual (k, threshold) grid search will loop over --
--- this file runs it ONCE, against the already-calibrated v1.0 config,
--- to confirm the core simulation logic works and see where today's
--- config already stands before searching for something better.
---
--- SIMULATION RULE per player-week: walk games in date order. Bank the
--- score at the FIRST game marked LOCK. If no game that week is ever
--- LOCK, you're at the last game (games_remaining_in_week = 0, PASS by
--- definition) -- bank GREATEST(that final score, 30), since a rational
--- manager takes whichever is better between "play them anyway" and "use
--- the flat replacement-level assumption" (see methodology_notes.md for
--- why 30 is a fixed ASSUMPTION, not a derived value).
---
--- ORACLE per player-week: MAX(fantasy_score) across all their games that
--- week -- the ceiling no real policy can beat.
---
--- NAIVE BASELINE B per player-week: same walk/bank logic, but using a
--- flat 30.3 cutoff instead of the calibrated threshold + hold-value
--- curve -- tests whether the sophisticated policy actually beats the
--- simplest possible rule.
+-- Backtest harness: walks each player-week in date order, banks the score
+-- at the first LOCK (or GREATEST(final_score, 30) if no LOCK fires), and
+-- compares that to a perfect-hindsight oracle and a naive flat-30.3-cutoff
+-- baseline. This is the metric grid_search_lock_decision.py optimizes and
+-- the tool used to validate/reject the injury-return penalty -- rerun it
+-- any time the model changes.
 
 WITH first_lock AS (
     SELECT DISTINCT ON (player_id, season_id, week_number)
@@ -38,12 +20,11 @@ last_game AS (
     ORDER BY player_id, season_id, week_number, game_date DESC
 ),
 oracle AS (
+    -- GREATEST(..., 30): even the oracle can't bank below replacement level
     SELECT player_id, season_id, week_number, GREATEST(MAX(fantasy_score), 30) AS oracle_score
     FROM game_lock_signal
     GROUP BY player_id, season_id, week_number
 ),
--- naive baseline B: same first-lock/last-game logic, computed independently
--- with a flat 30.3 cutoff instead of the real policy
 naive_first_lock AS (
     SELECT DISTINCT ON (player_id, season_id, week_number)
         player_id, season_id, week_number, fantasy_score AS naive_locked_score
@@ -76,9 +57,7 @@ SELECT
     ROUND(AVG(policy_banked_score) - AVG(naive_banked_score), 2) AS policy_edge_over_naive
 FROM banked;
 
--- Same, split by train (2021-24) vs validate (2024-26) -- worth checking
--- the policy's edge over naive isn't wildly different between the two,
--- before treating today's (k=1.25, threshold=35) as validated
+-- Same, split train (2021-24) / validate (2024-26) -- the edge shouldn't differ wildly between them
 WITH first_lock AS (
     SELECT DISTINCT ON (player_id, season_id, week_number)
         player_id, season_id, week_number, fantasy_score AS locked_score

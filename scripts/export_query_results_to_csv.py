@@ -1,26 +1,11 @@
 """
-Runs every numbered query section in a .sql file (sections delimited by
-the project's existing `-- =========================` / `-- N. Title`
-comment convention, the same pattern used throughout schema/*.sql's
-"Verification" blocks) and saves each section's result set to its own
-CSV file — so results can be shared by uploading CSV files instead of
-screenshotting every result panel in the GUI.
-
-Run from the project root:
-    python scripts/export_query_results_to_csv.py <path/to/file.sql> [--outdir DIR]
-
-Example:
-    python scripts/export_query_results_to_csv.py tests/lock_signal_validation.sql
-
-Each section becomes <outdir>/<sql_filename>_section<N>_<title>.csv.
-outdir defaults to <sql file's directory>/output (e.g.
-tests/output/ for a file in tests/).
-
-LIMITATION: expects the file to follow the section-divider convention
-already used across schema/*.sql — a `-- ===...===` divider line, a
-`-- N. Title` line, another `-- ===...===` divider line, then one SQL
-statement. Files without that structure won't split into sections; run
-the query manually or add the divider comments first.
+Runs every numbered `-- N. Title` query section in a .sql file (the
+project's existing divider convention) and saves each to its own CSV, so
+results can be shared as files instead of screenshots. Output defaults to
+<sql file's dir>/output/. Files without the divider convention won't split
+into sections -- run manually or add the comments first.
+Run: python scripts/export_query_results_to_csv.py <path/to/file.sql> [--outdir DIR]
+Example: python scripts/export_query_results_to_csv.py tests/lock_signal_validation.sql
 """
 
 import argparse

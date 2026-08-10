@@ -1,20 +1,9 @@
 """
-Populate team_schedule by pulling each team's regular season schedule via
-get_team_schedule(), cleaning with clean_team_schedule(), and bulk-inserting
-into Postgres.
-
-Prereq: schema/team_schedule.sql has been run — its CREATE TABLE already
-defines PK (game_id, team_id) directly. (Older copies of this table used a
-solo game_id PK, fixed via fix_team_schedule_pk.sql — not needed for a
-fresh setup, since the composite PK is now baked into team_schedule.sql
-itself.) Without the composite PK, every team's second-side row for a game
-gets silently dropped by ON CONFLICT DO NOTHING.
-
-Run from the project root:
-    python scripts/load_team_schedule.py [SEASON]
-
-Example:
-    python scripts/load_team_schedule.py 2025-26
+Populates team_schedule: pulls each team's schedule via get_team_schedule(),
+cleans it, and bulk-inserts. Prereq: team_schedule.sql's composite PK
+(game_id, team_id) must already exist -- a solo game_id PK silently drops
+every team's second-side row of each game via ON CONFLICT DO NOTHING.
+Run: python scripts/load_team_schedule.py [SEASON]
 """
 
 import sys
@@ -29,13 +18,12 @@ from get_team_schedule import get_team_schedule
 from data_cleaning_team_schedule import clean_team_schedule
 from db_connection import get_connection
 
-# Columns must match team_schedule.sql exactly, in order, lowercase
 TEAM_SCHEDULE_COLUMNS = [
     "game_id", "season_id", "team_id", "opponent_team_id",
     "game_date", "is_home", "wl", "pts", "plus_minus",
 ]
 
-SLEEP_SECONDS_BETWEEN_CALLS = 0.6  # be polite to the unofficial nba_api endpoints
+SLEEP_SECONDS_BETWEEN_CALLS = 0.6
 
 
 def build_team_lookup() -> dict:
@@ -49,10 +37,6 @@ def fetch_and_clean_one_team(team_id: int, season: str, team_lookup: dict) -> pd
         return raw
 
     cleaned = clean_team_schedule(raw, team_lookup)
-
-    # Rename to match DDL exactly. TEAM_ID survives clean_team_schedule()
-    # untouched (it's the raw leaguegamefinder column), same as
-    # opponent_team_id/is_home which clean_team_schedule() already derives.
     cleaned = cleaned.rename(columns={
         "SEASON_ID": "season_id",
         "TEAM_ID": "team_id",
@@ -67,9 +51,7 @@ def fetch_and_clean_one_team(team_id: int, season: str, team_lookup: dict) -> pd
     if missing:
         raise ValueError(f"clean_team_schedule() output is missing expected columns: {missing}")
 
-    # leaguegamefinder returns extra columns (TEAM_ABBREVIATION, TEAM_NAME,
-    # MIN, FGM, FGA, etc.) not yet in team_schedule.sql — select only what
-    # the table actually has.
+    # leaguegamefinder returns extra columns not in the DDL -- select only what's needed
     return cleaned[TEAM_SCHEDULE_COLUMNS]
 
 

@@ -1,13 +1,8 @@
 """
-Backfill a single player's game log for one season — useful when the full
-roster loop hits an isolated failure (timeout, rate limit) for just one or
-two players and you don't want to rerun the whole 500+ player list.
-
-Run from the project root:
-    python scripts/backfill_single_player.py "PLAYER FULL NAME" SEASON
-
-Example:
-    python scripts/backfill_single_player.py "Alex Caruso" 2022-23
+Backfills one player's game log for one season -- for when the full roster
+loop hits an isolated failure and rerunning all 500+ players isn't worth it.
+Run: python scripts/backfill_single_player.py "PLAYER FULL NAME" SEASON
+Example: python scripts/backfill_single_player.py "Alex Caruso" 2022-23
 """
 
 import sys

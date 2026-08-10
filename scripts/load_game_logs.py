@@ -1,35 +1,9 @@
 """
-Populate game_logs by pulling each season-specific roster player's
-PlayerGameLog, cleaning it with clean_gamelog(), and bulk-inserting into
-Postgres.
-
-Roster source: CommonTeamRoster(team_id, season) per team, NOT
-get_active_players() — get_active_players() only reflects TODAY's roster,
-which is wrong for any season other than the current one (misses players
-who were active back then but have since retired/left the league, and
-would incorrectly include current players who weren't active that season).
-Looping 30 team rosters (~30 calls) is also far cheaper than looping the
-full ~5,100-player historical list.
-
-A player traded mid-season appears on two teams' rosters for the same
-season — the player_id set is deduped across teams before fetching game
-logs, so their game log (which already carries the correct team_id per
-game via MATCHUP) is only fetched once, not once per team.
-
-Prereqs:
-  - schema/game_logs.sql has been run (table exists, empty or partially
-    loaded)
-  - players table is already populated (load_players.py) — game_logs.player_id
-    has a NOT NULL FK to players, so this will fail per-player if a player_id
-    isn't in players yet. Since load_players.py pulls the FULL historical
-    player list (not just active), any player who ever appeared on an NBA
-    roster should already be covered.
-
-Run from the project root:
-    python scripts/load_game_logs.py [SEASON]
-
-Example:
-    python scripts/load_game_logs.py 2022-23
+Populates game_logs: for each team's CommonTeamRoster (per season, not
+get_active_players() -- that only reflects TODAY's roster, wrong for any
+past season), pulls PlayerGameLog, cleans it, and bulk-inserts. Run from
+project root: python scripts/load_game_logs.py [SEASON]. Prereqs: game_logs.sql
+run, players table populated (load_players.py pulls the full historical list).
 """
 
 import sys
@@ -42,9 +16,8 @@ from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import playergamelog, commonteamroster
 
 from data_cleaning_nba_api import clean_gamelog
-from db_connection import get_connection  # same-folder import — run as `python scripts/load_game_logs.py [SEASON]` from project root
+from db_connection import get_connection
 
-# Columns must match game_logs.sql exactly, in order, lowercase
 GAME_LOGS_COLUMNS = [
     "game_id", "player_id", "team_id", "opponent_team_id", "season_id",
     "game_date", "is_home", "wl", "minutes", "fgm", "fga", "fg3m", "fg3a",
@@ -61,14 +34,8 @@ def build_team_lookup() -> dict:
 
 
 def build_season_roster(season: str) -> list[dict]:
-    """
-    Loops every team's CommonTeamRoster for the given season and returns a
-    deduped list of {player_id, full_name} — deduped since a traded player
-    appears on two teams' rosters for the same season, and we only want to
-    fetch their game log once.
-    """
     all_teams = nba_teams.get_teams()
-    seen = {}  # player_id -> full_name, dedupes trades automatically
+    seen = {}  # player_id -> full_name; dedupes a mid-season trade across two teams' rosters
 
     for i, t in enumerate(all_teams, start=1):
         try:
@@ -93,8 +60,6 @@ def fetch_and_clean_one_player(player_id: int, season: str, team_lookup: dict) -
 
     cleaned = clean_gamelog(raw, team_lookup)
 
-    # Rename to match DDL exactly — verified against clean_gamelog()'s actual
-    # output columns (nba_api's raw casing survives for most fields)
     cleaned = cleaned.rename(columns={
         "SEASON_ID": "season_id",
         "Player_ID": "player_id",
@@ -107,7 +72,6 @@ def fetch_and_clean_one_player(player_id: int, season: str, team_lookup: dict) -
         "OREB": "oreb", "DREB": "dreb",
         "AST": "ast", "STL": "stl", "BLK": "blk", "TOV": "tov",
         "PF": "pf", "PTS": "pts", "PLUS_MINUS": "plus_minus",
-        # team_id, opponent_team_id, is_home are already lowercase from clean_gamelog()
     })
 
     missing = [c for c in GAME_LOGS_COLUMNS if c not in cleaned.columns]
