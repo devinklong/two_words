@@ -21,6 +21,12 @@
 -- should you lock this" using the player's specific tier and games
 -- remaining that week. Accuracy here matters more than almost anything
 -- else in the schema for that use case.
+--
+-- B2B WIRING (8/9/26): now reads effective_games_remaining_in_week
+-- (B2B-discounted, fractional) instead of the raw integer count, so a
+-- remaining game that's a back-to-back second night correctly counts as
+-- slightly less than a full future chance. Required widening
+-- hold_win_probability_by_tier's parameter from BIGINT to NUMERIC.
 
 DROP TABLE IF EXISTS hold_value_curve_params_by_tier CASCADE;
 
@@ -31,7 +37,23 @@ CREATE TABLE hold_value_curve_params_by_tier (
     fitted_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
-CREATE OR REPLACE FUNCTION hold_win_probability_by_tier(games_remaining BIGINT, p_tier TEXT)
+-- CREATE OR REPLACE does NOT replace a function whose parameter types
+-- changed -- it would create a second, overloaded version instead,
+-- leaving the old BIGINT one as dead weight. Drop it explicitly first.
+--
+-- CASCADE (added 8/10/26): game_fantasy_scores_weekly_lock_signal (below,
+-- same file) AND game_lock_signal (schema/lock_model/game_lock_signal.sql)
+-- both depend on this function, transitively. Without CASCADE, this DROP
+-- fails outright the moment either of those exists from a prior run,
+-- which also means the later DROP VIEW / CREATE VIEW statements in this
+-- file silently fail too (view "already exists") and everything below
+-- keeps running against the STALE pre-edit function/view -- no error
+-- surfaces except at the DROP statements themselves, so it's easy to miss.
+-- CASCADE takes game_lock_signal down with it -- ALWAYS rerun
+-- game_lock_signal.sql immediately after this file, never standalone.
+DROP FUNCTION IF EXISTS hold_win_probability_by_tier(BIGINT, TEXT) CASCADE;
+
+CREATE OR REPLACE FUNCTION hold_win_probability_by_tier(games_remaining NUMERIC, p_tier TEXT)
 RETURNS NUMERIC AS $$
 DECLARE
     a_val NUMERIC;
@@ -53,18 +75,26 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
-DROP VIEW IF EXISTS game_fantasy_scores_weekly_lock_signal;
+-- CASCADE (added 8/10/26): game_lock_signal depends on this view. See
+-- note above the function drop -- same failure mode, same fix.
+DROP VIEW IF EXISTS game_fantasy_scores_weekly_lock_signal CASCADE;
 
 CREATE VIEW game_fantasy_scores_weekly_lock_signal AS
 SELECT
     gfsw.*,
     pt.tier,
-    ROUND(1 - hold_win_probability_by_tier(gfsw.games_remaining_in_week, pt.tier), 4) AS percentage_to_lock
+    ROUND(1 - hold_win_probability_by_tier(gfsw.effective_games_remaining_in_week, pt.tier), 4) AS percentage_to_lock
 FROM game_fantasy_scores_weekly_effective gfsw
 JOIN player_tiers pt
     ON pt.player_id = gfsw.player_id AND pt.season_id = gfsw.season_id;
--- NOTE: INNER JOIN, not LEFT -- players outside the ownable pool (not in
--- player_tiers) get no row here, matching ownable_player_pool's scope.
+-- NOTE: uses effective_games_remaining_in_week (B2B-discounted,
+-- fractional), NOT games_remaining_in_week, so a future back-to-back
+-- game correctly counts as slightly less than a full "chance" in the
+-- hold-value curve. games_remaining_in_week itself is still exposed via
+-- gfsw.* unchanged -- game_lock_signal.sql's PASS boundary
+-- (games_remaining_in_week = 0) deliberately still uses the RAW count,
+-- not this effective one, since B2B fatigue discounts a game's expected
+-- VALUE, it doesn't make a real scheduled game disappear.
 
 -- =========================
 -- Verification
