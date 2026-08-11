@@ -41,6 +41,12 @@ ANALYZE team_schedule_b2b_flags;
 -- =========================
 -- Step 2: game_fantasy_scores_weekly_effective (depends on step 1)
 -- =========================
+-- RETIRED (8/10/26) -- DO NOT RUN THIS STEP. This object is now a real
+-- TABLE (migrate_game_fantasy_scores_weekly_effective_to_table.sql),
+-- kept current via sync_game_fantasy_scores_weekly_effective.sql instead
+-- of a full rebuild. Running the code below would DROP the table and
+-- recreate it as a materialized view again, silently undoing the
+-- migration. Left as a historical record -- Step 1 above is still valid.
 -- Step 1's CASCADE already dropped this if it existed; type-safe drop
 -- here too in case this object was rebuilt independently since.
 

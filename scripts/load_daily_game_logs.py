@@ -8,22 +8,27 @@ BoxScoreTraditionalV2 per game -- a handful of API calls instead of
 hundreds. Reuses game_logs.py's own load_game_logs() insert function so
 the ON CONFLICT/composite-PK logic stays a single source of truth.
 
-FIRST-PASS, PARTIALLY VERIFIED (8/10/26) -- BoxScoreTraditionalV2 was
-confirmed dead for the 2025-26 season (no data published); switched to V3,
-whose player/team-stats column shapes ARE confirmed against a real pull.
-Still NOT verified: ScoreboardV2 carries the same "known issues" warning
-for 2025-26 games specifically -- get_games_for_date() below still calls
-V2 and needs the same column-check treatment before trusting it, exactly
-like verify_boxscore_columns.py just did for the box score endpoint.
-Also still unconfirmed: the raw `minutes` string FORMAT from V3 (column
-name is confirmed, its value format -- "MM:SS" vs something else -- was
-cut off in the terminal output that confirmed everything else).
+VERIFIED, NOT FIRST-PASS ANYMORE (8/10/26) -- BoxScoreTraditionalV2 was
+confirmed dead for the 2025-26 season (no data published); switched to
+V3, whose player/team-stats column shapes are confirmed against a real
+pull. ScoreboardV2 has ALSO been migrated to V3 (get_scoreboard_games.py)
+-- V3's shape turned out to have no direct home/away column at all,
+derived instead from the game-leaders frame's leaderType field, confirmed
+against a real pull and cross-checked two independent ways (see that
+file's docstring). minutes format confirmed "MM:SS", matching
+PlayerGameLog.
 
-  - This does NOT run team_schedule_gaps/gap_reasons/rebuild_materialized_
-    views.sql after loading -- those still need to be triggered
-    separately (or folded into this script) for injury-return flags and
-    the B2B/effective-games materialized views to reflect last night's
-    games.
+CHAINED (8/10/26): after loading game_logs, this now also calls
+build_gap_reasons() scoped to the target date, AND
+sync_game_fantasy_scores_weekly_effective() -- the latter is deliberately
+NOT date-scoped (see that file's own docstring): it catches up ANY
+game_logs rows missing a corresponding row here, regardless of source, so
+a 2-way/bench player backfilled through backfill_missing_players.py or
+backfill_single_player.py also gets picked up automatically, not just
+tonight's games. team_schedule_b2b_flags (schema/rebuild_materialized_
+views.sql's Step 1) is UNCHANGED and still needs a manual rebuild if the
+schedule itself changes (postponement, makeup game) -- that's rare enough
+not to chain in here.
 
 Run: python scripts/load_daily_game_logs.py [YYYY-MM-DD]
      (defaults to yesterday if no date given)
@@ -32,9 +37,12 @@ Run: python scripts/load_daily_game_logs.py [YYYY-MM-DD]
 import sys
 from datetime import date, timedelta
 
-from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3
+from nba_api.stats.endpoints import boxscoretraditionalv3
 
 from data_cleaning_boxscore import clean_boxscore
+from get_scoreboard_games import get_completed_games_with_home_away
+from build_gap_reasons import build_gap_reasons
+from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_weekly_effective
 from load_game_logs import load_game_logs, GAME_LOGS_COLUMNS
 from db_connection import get_connection
 
@@ -46,28 +54,6 @@ def season_for_date(d: date) -> str:
     return f"2{start_year}"  # matches this project's season_id format, e.g. '22024'
 
 
-def get_games_for_date(target_date: date) -> list[dict]:
-    """
-    STILL UNVERIFIED (see file docstring) -- ScoreboardV2 carries the same
-    kind of "known issues for 2025-26" warning BoxScoreTraditionalV2 did
-    before it turned out to return no real data at all. Run this against
-    a real date and confirm HOME_TEAM_ID/VISITOR_TEAM_ID/GAME_ID actually
-    populate correctly before trusting it -- if V2 is similarly broken,
-    this needs the same V2->V3 migration data_cleaning_boxscore.py just got.
-    """
-    date_str = target_date.strftime("%m/%d/%Y")
-    sb = scoreboardv2.ScoreboardV2(game_date=date_str)
-    header = sb.get_data_frames()[0]  # GameHeader
-    return [
-        {
-            "game_id": row["GAME_ID"],
-            "home_team_id": row["HOME_TEAM_ID"],
-            "visitor_team_id": row["VISITOR_TEAM_ID"],
-        }
-        for _, row in header.iterrows()
-    ]
-
-
 def main():
     target_date = (
         date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1
@@ -76,8 +62,8 @@ def main():
     season_id = season_for_date(target_date)
 
     print(f"Finding games for {target_date.isoformat()}...")
-    games = get_games_for_date(target_date)
-    print(f"{len(games)} game(s) found.")
+    games = get_completed_games_with_home_away(target_date.isoformat())
+    print(f"{len(games)} completed game(s) found.")
 
     conn = get_connection()
     total_inserted = 0
@@ -109,9 +95,25 @@ def main():
         for gid, err in failures:
             print(f"  - {gid}: {err}")
 
-    print("\nNOTE: this does not run gap_reasons/materialized-view rebuilds --")
-    print("run those separately if you need injury flags or B2B-adjusted")
-    print("views to reflect tonight's games.")
+    print(f"\nAnnotating any new gaps from {target_date.isoformat()} with injury reasons...")
+    gap_conn = get_connection()
+    try:
+        build_gap_reasons(gap_conn, date_from=target_date.isoformat())
+    finally:
+        gap_conn.close()
+
+    print("\nSyncing game_fantasy_scores_weekly_effective (catches up ANY missing")
+    print("rows, not just tonight's -- see file docstring)...")
+    sync_conn = get_connection()
+    try:
+        n_synced = sync_game_fantasy_scores_weekly_effective(sync_conn)
+        print(f"Synced {n_synced} new row(s).")
+    finally:
+        sync_conn.close()
+
+    print("\nNOTE: team_schedule_b2b_flags still needs a manual rebuild")
+    print("(schema/rebuild_materialized_views.sql, Step 1 only) if the")
+    print("schedule itself changed -- not run automatically here.")
 
 
 if __name__ == "__main__":

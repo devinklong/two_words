@@ -2,6 +2,14 @@
 Backfills players present in game_logs but missing from players -- happens
 when nba_api's bundled static player list (load_players.py) hasn't caught
 up to very recent additions that the live endpoints already know about.
+
+CHAINED (8/10/26): after inserting missing players, also runs
+sync_game_fantasy_scores_weekly_effective() -- if any of those players'
+game_logs rows existed but never got a corresponding effective-table row
+(e.g. skipped because a join depending on the player_tiers/pool chain
+failed while the player was still missing from players), this catches
+them up. A no-op if there's nothing to catch up on.
+
 Run: python scripts/backfill_missing_players.py
 """
 
@@ -11,6 +19,7 @@ from nba_api.stats.endpoints import commonplayerinfo
 from psycopg2.extras import execute_values
 
 from db_connection import get_connection
+from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_weekly_effective
 
 SLEEP_SECONDS_BETWEEN_CALLS = 0.6
 
@@ -77,6 +86,11 @@ def main():
         conn.commit()
         cur.close()
         print(f"\nInserted {len(rows)} missing players.")
+
+    print("\nSyncing game_fantasy_scores_weekly_effective (catches up any of these")
+    print("players' games that were skipped while they were missing)...")
+    n_synced = sync_game_fantasy_scores_weekly_effective(conn)
+    print(f"Synced {n_synced} new row(s).")
 
     conn.close()
 

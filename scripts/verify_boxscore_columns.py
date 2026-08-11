@@ -1,11 +1,12 @@
 """
 Confirms clean_boxscore()'s actual output against a real
-BoxScoreTraditionalV3 pull -- V2 was confirmed dead for the 2025-26
-season (no data published), so this checks V3's shape instead. Prints
-the RAW pre-clean `minutes` column specifically un-truncated (the
-initial column-discovery pull, 8/10/26, confirmed the column NAME but
-its value FORMAT got cut off by pandas' terminal truncation) alongside
-the cleaned version, so a real mismatch would be visible at a glance.
+BoxScoreTraditionalV3 pull. Both BoxScoreTraditionalV2 and ScoreboardV2
+were confirmed broken/dead for the 2025-26 season -- this file and
+get_scoreboard_games.py now use V3 for both. Prints the RAW pre-clean
+`minutes` column un-truncated (the initial column-discovery pull, 8/10/26,
+confirmed the column NAME but its value FORMAT got cut off by pandas'
+terminal truncation) alongside the cleaned version, so a real mismatch
+would be visible at a glance.
 
 Run: python scripts/verify_boxscore_columns.py GAME_ID GAME_DATE [SEASON_ID]
 Example: python scripts/verify_boxscore_columns.py 0022400909 2025-03-07
@@ -14,21 +15,11 @@ Example: python scripts/verify_boxscore_columns.py 0022400909 2025-03-07
 import sys
 from datetime import date
 
-from nba_api.stats.endpoints import scoreboardv2, boxscoretraditionalv3
+from nba_api.stats.endpoints import boxscoretraditionalv3
 
 from data_cleaning_boxscore import clean_boxscore
+from get_scoreboard_games import find_home_visitor_for_game
 from load_daily_game_logs import season_for_date
-
-
-def find_home_visitor(game_id: str, game_date: str) -> tuple:
-    date_str = date.fromisoformat(game_date).strftime("%m/%d/%Y")
-    header = scoreboardv2.ScoreboardV2(game_date=date_str).get_data_frames()[0]
-    match = header[header["GAME_ID"] == game_id]
-    if match.empty:
-        raise ValueError(f"game_id={game_id} not found in ScoreboardV2 for {game_date} "
-                          f"-- double check the date matches the actual game night")
-    row = match.iloc[0]
-    return row["HOME_TEAM_ID"], row["VISITOR_TEAM_ID"]
 
 
 def main():
@@ -40,7 +31,7 @@ def main():
     game_date = sys.argv[2]
     season_id = sys.argv[3] if len(sys.argv) > 3 else season_for_date(date.fromisoformat(game_date))
 
-    home_team_id, visitor_team_id = find_home_visitor(game_id, game_date)
+    home_team_id, visitor_team_id = find_home_visitor_for_game(game_id, game_date)
     print(f"home_team_id={home_team_id}  visitor_team_id={visitor_team_id}  season_id={season_id}")
 
     dfs = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=game_id).get_data_frames()

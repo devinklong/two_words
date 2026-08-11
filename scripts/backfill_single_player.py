@@ -1,6 +1,15 @@
 """
-Backfills one player's game log for one season -- for when the full roster
-loop hits an isolated failure and rerunning all 500+ players isn't worth it.
+Backfill a single player's game log for one season -- useful when the full
+roster loop hits an isolated failure (timeout, rate limit) for just one or
+two players and you don't want to rerun the whole 500+ player list.
+
+CHAINED (8/10/26): after inserting this player's game_logs rows, also
+scopes build_gap_reasons() to their tenure window and runs
+sync_game_fantasy_scores_weekly_effective() -- this is the backfill path
+most likely to actually add new game_logs rows (unlike
+backfill_missing_players.py, which only touches the players table), so
+it's the one that most needs both chained.
+
 Run: python scripts/backfill_single_player.py "PLAYER FULL NAME" SEASON
 Example: python scripts/backfill_single_player.py "Alex Caruso" 2022-23
 """
@@ -10,7 +19,16 @@ import sys
 from nba_api.stats.static import players as nba_players
 
 from load_game_logs import build_team_lookup, fetch_and_clean_one_player, load_game_logs
+from build_gap_reasons import build_gap_reasons
+from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_weekly_effective
 from db_connection import get_connection
+
+
+def season_start_date(season: str) -> str:
+    """'2022-23' -> '2022-10-01' -- a safe early-October floor for the
+    gap_reasons date_from filter; NBA regular seasons start in October."""
+    start_year = season.split("-")[0]
+    return f"{start_year}-10-01"
 
 
 def main():
@@ -41,6 +59,13 @@ def main():
         cleaned = fetch_and_clean_one_player(player_id, season, team_lookup)
         n = load_game_logs(cleaned, conn)
         print(f"Inserted {n} rows for {matches[0]['full_name']}, {season}.")
+
+        print(f"\nAnnotating gaps from {season} onward with injury reasons...")
+        build_gap_reasons(conn, date_from=season_start_date(season))
+
+        print("\nSyncing game_fantasy_scores_weekly_effective...")
+        n_synced = sync_game_fantasy_scores_weekly_effective(conn)
+        print(f"Synced {n_synced} new row(s).")
     finally:
         conn.close()
 

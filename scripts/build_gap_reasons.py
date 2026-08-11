@@ -5,10 +5,20 @@ fetching each date's report ONCE and reusing it for every gap on that date
 name alone risks collisions across 530+ active players; still-ambiguous
 matches are left unexplained and logged for manual review, not guessed at.
 Prereqs: team_schedule_gaps view + gap_reasons table exist.
-Run: python scripts/build_gap_reasons.py
+
+DATE-SCOPED (8/10/26): now accepts an optional date_from, so the daily
+pipeline (load_daily_game_logs.py) can chain this in scoped to just the
+date it loaded, instead of re-processing the full historical backfill
+(and re-fetching thousands of already-resolved injury reports) every
+single night. Full-backfill behavior (no date filter) still works
+unchanged when run standalone with no argument.
+
+Run (full backfill, unchanged): python scripts/build_gap_reasons.py
+Run (date-scoped):              python scripts/build_gap_reasons.py YYYY-MM-DD
 """
 
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -22,14 +32,21 @@ from db_connection import get_connection
 SLEEP_SECONDS_BETWEEN_REPORT_CALLS = 0.5
 
 
-def fetch_gaps(conn) -> pd.DataFrame:
+def fetch_gaps(conn, date_from=None) -> pd.DataFrame:
+    """date_from (optional, 'YYYY-MM-DD'): restricts to gaps on or after
+    this date -- used for the daily-scoped chained call. None = full
+    backfill (original, unscoped behavior)."""
     query = """
         SELECT g.player_id, p.first_name, p.last_name, g.team_id, g.game_id, g.game_date
         FROM team_schedule_gaps g
         JOIN players p ON p.player_id = g.player_id
-        ORDER BY g.game_date
     """
-    return pd.read_sql(query, conn)
+    params = None
+    if date_from:
+        query += " WHERE g.game_date >= %s"
+        params = (date_from,)
+    query += " ORDER BY g.game_date"
+    return pd.read_sql(query, conn, params=params)
 
 
 def get_report_for_date(game_date, report_cache: dict):
@@ -123,13 +140,18 @@ def load_gap_reasons(df: pd.DataFrame, conn) -> int:
     return len(rows)
 
 
-def main():
-    conn = get_connection()
-
-    gaps_df = fetch_gaps(conn)
+def build_gap_reasons(conn, date_from=None) -> int:
+    """
+    Callable entry point -- used both by main() below and by
+    load_daily_game_logs.py's chained call. Returns the number of gap
+    reason rows inserted. Reuses the caller's connection rather than
+    opening/closing its own, so a chained call doesn't need a second
+    round trip to the DB.
+    """
+    gaps_df = fetch_gaps(conn, date_from=date_from)
     if gaps_df.empty:
-        print("No gaps found in team_schedule_gaps — nothing to annotate.")
-        return
+        print("No gaps found -- nothing to annotate.")
+        return 0
 
     annotated, ambiguous = annotate_gaps(gaps_df)
 
@@ -140,15 +162,25 @@ def main():
     if not ambiguous.empty:
         log_path = "cleaning_logs/ambiguous_gap_matches.csv"
         os.makedirs("cleaning_logs", exist_ok=True)
-        ambiguous.to_csv(log_path, index=False)
-        print(f"\n{len(ambiguous)} ambiguous match(es) — logged to {log_path} for manual review.")
+        # Append, not overwrite -- a daily-scoped run's ambiguous matches
+        # shouldn't erase ones logged by a previous run (full backfill or
+        # an earlier day). header only written if the file is new.
+        write_header = not os.path.exists(log_path)
+        ambiguous.to_csv(log_path, mode="a", header=write_header, index=False)
+        print(f"\n{len(ambiguous)} ambiguous match(es) — appended to {log_path} for manual review.")
     else:
         print("\nNo ambiguous matches this run.")
 
     n = load_gap_reasons(annotated, conn)
-    conn.close()
-
     print(f"\nDone. Inserted {n} gap reason rows.")
+    return n
+
+
+def main():
+    date_from = sys.argv[1] if len(sys.argv) > 1 else None
+    conn = get_connection()
+    build_gap_reasons(conn, date_from=date_from)
+    conn.close()
 
 
 if __name__ == "__main__":
