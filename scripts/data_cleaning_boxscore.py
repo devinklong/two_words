@@ -14,6 +14,8 @@ the 3 returned frames -- opponent_team_id/is_home still have to come from
 a separate scoreboard call, passed in the same way as before.
 """
 
+import pandas as pd
+
 def clean_boxscore(player_stats_df, team_stats_df, game_id, game_date, season_id,
                     home_team_id, visitor_team_id):
     df = player_stats_df.copy()
@@ -56,6 +58,22 @@ def clean_boxscore(player_stats_df, team_stats_df, game_id, game_date, season_id
         "assists": "ast", "steals": "stl", "blocks": "blk", "turnovers": "tov",
         "foulsPersonal": "pf", "points": "pts", "plusMinusPoints": "plus_minus",
     })
+
+    # game_logs.minutes is INTEGER -- confirmed 8/10/26 the hard way, via
+    # a real insert failure ("invalid input syntax for type integer:
+    # '31:39'"). V3's raw format is "MM:SS" (minutes:seconds); the
+    # original PlayerGameLog-based backfill apparently already produced
+    # clean whole-minute values, so this mismatch never surfaced until
+    # box scores were introduced. Seconds are dropped (floor to whole
+    # minutes), not rounded -- matches the simplest reading of "minutes
+    # played" an INTEGER column implies.
+    def _parse_minutes(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)) or v == "":
+            return None
+        s = str(v)
+        return int(s.split(":")[0]) if ":" in s else int(float(s))
+
+    df["minutes"] = df["minutes"].apply(_parse_minutes)
 
     return df[[
         "game_id", "player_id", "team_id", "opponent_team_id", "season_id",

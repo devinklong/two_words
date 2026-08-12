@@ -8,14 +8,26 @@ Only falls back to a live nba_api pull (default) or manual stats
 right after a game ends, ahead of the daily batch, or testing a
 hypothetical stat line that was never real.
 
-Run (checks DB first, live pull as fallback):
+team_id is auto-resolved (8/11/26) from the player's most recent game_logs
+row, not required as a CLI arg anymore -- game_logs already knows which
+team someone plays for, so there's no reason to make you supply it by
+hand for every check. Still overridable via --team-id for the edge case
+of a very recent trade the DB hasn't caught up to yet, or a
+brand-new player with no game_logs history at all (auto-resolution has
+nothing to find in that case and will raise a clear error asking for it).
+
+Run (checks DB first, live pull as fallback, team_id auto-resolved):
     python scripts/lock_decision_input.py PLAYER_ID --game-id GAME_ID \
-        --season-id 22024 --game-date 2025-03-07 --team-id 1610612743
+        --season-id 22024 --game-date 2025-03-07
 
 Run (manual stat line, skips the DB check and live pull entirely):
     python scripts/lock_decision_input.py PLAYER_ID --manual \
         --pts 31 --oreb 6 --dreb 15 --ast 22 --stl 3 --blk 0 --tov 4 \
         --fgm 13 --fga 22 --ftm 2 --fta 3 --fg3m 3 \
+        --season-id 22024 --game-date 2025-03-07
+
+Run (override team_id, e.g. a very recent trade):
+    python scripts/lock_decision_input.py PLAYER_ID --game-id GAME_ID \
         --season-id 22024 --game-date 2025-03-07 --team-id 1610612743
 """
 
@@ -27,6 +39,36 @@ from nba_api.stats.endpoints import playergamelog
 from db_connection import get_connection
 
 MANUAL_STATS = ["pts", "oreb", "dreb", "ast", "stl", "blk", "tov", "fgm", "fga", "ftm", "fta", "fg3m"]
+
+
+# =========================
+# team_id resolution
+# =========================
+
+def resolve_team_id(conn, player_id: int) -> int:
+    """
+    Looks up the player's most recent known team from their own
+    game_logs history -- reuses data that's already there instead of
+    requiring --team-id by hand for every check. Trades are rare enough
+    that "most recent game they actually played" is a reliable default;
+    --team-id still overrides this for the edge case of a trade the DB
+    hasn't caught up to yet.
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT team_id FROM game_logs
+        WHERE player_id = %s
+        ORDER BY game_date DESC
+        LIMIT 1
+    """, (player_id,))
+    row = cur.fetchone()
+    cur.close()
+    if row is None:
+        raise ValueError(
+            f"player_id={player_id} has no game_logs history to resolve team_id from "
+            f"-- pass --team-id explicitly (e.g. for a brand-new player with no games played yet)."
+        )
+    return row[0]
 
 
 # =========================
@@ -264,7 +306,8 @@ def main():
     parser.add_argument("player_id", type=int)
     parser.add_argument("--season-id", required=True, help="e.g. 22024")
     parser.add_argument("--game-date", required=True, help="YYYY-MM-DD")
-    parser.add_argument("--team-id", type=int, required=True)
+    parser.add_argument("--team-id", type=int, default=None,
+                         help="Overrides auto-resolution from the player's most recent game_logs row")
 
     parser.add_argument("--game-id", help="nba_api Game_ID -- required unless --manual is used")
     parser.add_argument("--manual", action="store_true",
@@ -284,7 +327,8 @@ def main():
         stats = {s: getattr(args, s) for s in MANUAL_STATS}
         fantasy_score = compute_fantasy_score(stats)
         context = get_player_context(conn, args.player_id, args.season_id)
-        games_remaining = get_games_remaining(conn, args.team_id, args.game_date, args.season_id)
+        team_id = args.team_id or resolve_team_id(conn, args.player_id)
+        games_remaining = get_games_remaining(conn, team_id, args.game_date, args.season_id)
         result = decide(fantasy_score, context, games_remaining, conn)
 
     else:
@@ -298,7 +342,8 @@ def main():
             stats = fetch_live_stats(args.player_id, args.game_id, args.season_id)
             fantasy_score = compute_fantasy_score(stats)
             context = get_player_context(conn, args.player_id, args.season_id)
-            games_remaining = get_games_remaining(conn, args.team_id, args.game_date, args.season_id)
+            team_id = args.team_id or resolve_team_id(conn, args.player_id)
+            games_remaining = get_games_remaining(conn, team_id, args.game_date, args.season_id)
             result = decide(fantasy_score, context, games_remaining, conn)
 
     conn.close()

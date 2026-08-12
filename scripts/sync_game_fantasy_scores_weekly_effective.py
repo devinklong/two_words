@@ -12,7 +12,7 @@ from pathlib import Path
 
 from db_connection import get_connection
 
-SQL_PATH = Path(__file__).parent.parent / "schema" / "sync_game_fantasy_scores_weekly_effective.sql"
+SQL_PATH = Path(__file__).parent.parent / "schema" / "tables" / "sync_game_fantasy_scores_weekly_effective.sql"
 
 
 def sync_game_fantasy_scores_weekly_effective(conn) -> int:

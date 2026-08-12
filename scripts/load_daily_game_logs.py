@@ -86,6 +86,12 @@ def main():
         except Exception as e:
             print(f"[{i}/{len(games)}] game_id {g['game_id']}: FAILED — {e}")
             failures.append((g["game_id"], str(e)))
+            # CRITICAL (found 8/10/26): without this, one failed insert
+            # poisons the WHOLE transaction -- every subsequent game in
+            # this run fails too ("current transaction is aborted"),
+            # even though their data was fine. One bad stat line could
+            # silently cost an entire night's data without this.
+            conn.rollback()
 
     conn.close()
 
@@ -98,7 +104,11 @@ def main():
     print(f"\nAnnotating any new gaps from {target_date.isoformat()} with injury reasons...")
     gap_conn = get_connection()
     try:
-        build_gap_reasons(gap_conn, date_from=target_date.isoformat())
+        # date_to = date_from: scopes to EXACTLY this one day, not an
+        # open-ended range. Found the hard way tonight -- without date_to,
+        # this silently processed every gap through the rest of the
+        # season instead of just this date's games.
+        build_gap_reasons(gap_conn, date_from=target_date.isoformat(), date_to=target_date.isoformat())
     finally:
         gap_conn.close()
 
@@ -110,10 +120,6 @@ def main():
         print(f"Synced {n_synced} new row(s).")
     finally:
         sync_conn.close()
-
-    print("\nNOTE: team_schedule_b2b_flags still needs a manual rebuild")
-    print("(schema/rebuild_materialized_views.sql, Step 1 only) if the")
-    print("schedule itself changed -- not run automatically here.")
 
 
 if __name__ == "__main__":

@@ -6,15 +6,20 @@ name alone risks collisions across 530+ active players; still-ambiguous
 matches are left unexplained and logged for manual review, not guessed at.
 Prereqs: team_schedule_gaps view + gap_reasons table exist.
 
-DATE-SCOPED (8/10/26): now accepts an optional date_from, so the daily
-pipeline (load_daily_game_logs.py) can chain this in scoped to just the
-date it loaded, instead of re-processing the full historical backfill
-(and re-fetching thousands of already-resolved injury reports) every
-single night. Full-backfill behavior (no date filter) still works
-unchanged when run standalone with no argument.
+DATE-SCOPED (8/10/26): now accepts an optional date_from AND date_to, so
+the daily pipeline (load_daily_game_logs.py) can chain this in scoped to
+EXACTLY the one date it loaded, instead of an open-ended "this date
+onward" range. FOUND THE HARD WAY: with date_from alone (>= only, no
+upper bound), a chained call scoped to a single historical date ended up
+re-processing every gap through the rest of that ENTIRE season -- 100+
+unique dates, each triggering a real nbainjuries report fetch. date_to
+defaults to None (open-ended, matches the old behavior) specifically for
+backfill_single_player.py's use case, which legitimately wants "this
+player's whole season onward," not a single day.
 
 Run (full backfill, unchanged): python scripts/build_gap_reasons.py
-Run (date-scoped):              python scripts/build_gap_reasons.py YYYY-MM-DD
+Run (single date):              python scripts/build_gap_reasons.py YYYY-MM-DD YYYY-MM-DD
+Run (open range):                python scripts/build_gap_reasons.py YYYY-MM-DD
 """
 
 import os
@@ -32,21 +37,29 @@ from db_connection import get_connection
 SLEEP_SECONDS_BETWEEN_REPORT_CALLS = 0.5
 
 
-def fetch_gaps(conn, date_from=None) -> pd.DataFrame:
-    """date_from (optional, 'YYYY-MM-DD'): restricts to gaps on or after
-    this date -- used for the daily-scoped chained call. None = full
-    backfill (original, unscoped behavior)."""
+def fetch_gaps(conn, date_from=None, date_to=None) -> pd.DataFrame:
+    """date_from/date_to (optional, 'YYYY-MM-DD'): restricts to gaps in
+    this range (inclusive both ends). date_to=None with date_from set
+    means open-ended "date_from onward" -- intentional for
+    backfill_single_player.py; the daily-chained call passes both,
+    equal, for an exact single-day scope."""
     query = """
         SELECT g.player_id, p.first_name, p.last_name, g.team_id, g.game_id, g.game_date
         FROM team_schedule_gaps g
         JOIN players p ON p.player_id = g.player_id
     """
-    params = None
+    conditions = []
+    params = []
     if date_from:
-        query += " WHERE g.game_date >= %s"
-        params = (date_from,)
+        conditions.append("g.game_date >= %s")
+        params.append(date_from)
+    if date_to:
+        conditions.append("g.game_date <= %s")
+        params.append(date_to)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY g.game_date"
-    return pd.read_sql(query, conn, params=params)
+    return pd.read_sql(query, conn, params=tuple(params) if params else None)
 
 
 def get_report_for_date(game_date, report_cache: dict):
@@ -140,7 +153,7 @@ def load_gap_reasons(df: pd.DataFrame, conn) -> int:
     return len(rows)
 
 
-def build_gap_reasons(conn, date_from=None) -> int:
+def build_gap_reasons(conn, date_from=None, date_to=None) -> int:
     """
     Callable entry point -- used both by main() below and by
     load_daily_game_logs.py's chained call. Returns the number of gap
@@ -148,7 +161,7 @@ def build_gap_reasons(conn, date_from=None) -> int:
     opening/closing its own, so a chained call doesn't need a second
     round trip to the DB.
     """
-    gaps_df = fetch_gaps(conn, date_from=date_from)
+    gaps_df = fetch_gaps(conn, date_from=date_from, date_to=date_to)
     if gaps_df.empty:
         print("No gaps found -- nothing to annotate.")
         return 0
@@ -178,8 +191,9 @@ def build_gap_reasons(conn, date_from=None) -> int:
 
 def main():
     date_from = sys.argv[1] if len(sys.argv) > 1 else None
+    date_to = sys.argv[2] if len(sys.argv) > 2 else None
     conn = get_connection()
-    build_gap_reasons(conn, date_from=date_from)
+    build_gap_reasons(conn, date_from=date_from, date_to=date_to)
     conn.close()
 
 

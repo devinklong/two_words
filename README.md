@@ -1,64 +1,72 @@
 # two_words
 
-This project demonstrates schema design, ETL pipeline construction, and statistical
-analysis using a real-world dataset (NBA game logs) and a concrete decision-making
-use case: fantasy basketball "lock vs. hold" strategy.
-
-**two_words** is a Python + PostgreSQL data pipeline that analyzes NBA game logs to calculate optimal "lock vs. hold" thresholds for game-selection fantasy basketball formats (e.g. Sleeper). It ingests official NBA statistics, computes rolling performance baselines, and outputs a data-driven **LOCK / PASS / EVALUATE** recommendation for each completed game.
+A Python + PostgreSQL data pipeline that analyzes NBA game logs to compute a **LOCK / HOLD / PASS** recommendation for game-selection fantasy basketball formats (e.g. Sleeper) — after a player's game, should you lock in that score, or hold for a potentially better one later in the scoring week?
 
 > The name is an homage to our Sleeper fantasy league's name.
 
 ## Project Status
-🚧 In development — schema and ingestion pipeline are being actively designed. Not yet functional end-to-end.
+
+**v1.0–v1.2 shipped (8/11/26).** The decision engine is live, validated, and updateable in real time:
+
+- Core decision logic calibrated via a proper train/validate backtest, not just tuned on training data
+- Two real corrections tested against real outcomes — one shipped (back-to-back fatigue), one correctly rejected after failing a targeted backtest (injury-return penalty) — see `methodology_notes.md` for the full story on why a negative result there was the right outcome, not a failure
+- Daily `nba_api` ingestion (box scores, schedule, scoreboard) keeps the database current without manual backfilling, verified end-to-end and spot-checked at scale
+- A callable input model (`scripts/lock_decision_input.py`) checks the database first and only computes live when a game genuinely isn't loaded yet
+
+**Now starting v2.0**: team-level context (pace, ratings) as a real layer on top of the existing player-specific model. See `methodology_notes.md`'s Open Items.
 
 ## Overview
 
-In game-selection formats, managers must decide after a player's game whether to **lock** in that score or **hold** for a potentially better one later in the scoring week. Existing projection tools are plentiful, but few account for this specific lock/hold mechanic — this project fills that gap by comparing a completed game's result against player-specific rolling thresholds (5-game and 10-game averages and standard deviations) to flag it as **LOCK**, **PASS**, or **EVALUATE**.
-
-## Initial Scope (v1.0)
-
-- **Relational Schema Design** — Model players, teams, and game logs with primary/foreign key constraints for data integrity.
-- **Database Architecture** — PostgreSQL, optimized for multi-year historical queries and rolling-window aggregations.
-- **Data Ingestion** — Pull game logs and player/team stats via `nba_api`, stored in PostgreSQL.
-- **Data Processing (ETL)** — Clean and transform raw data into consistent, query-ready tables.
-- **Statistical Baselines** — Rolling averages (5-game, 10-game) and standard deviations defining floor/median/ceiling ranges.
-- **Decision Engine** — Compares completed game results against thresholds to output LOCK / PASS / EVALUATE.
+In game-selection formats, managers must decide after a player's game whether to **lock** in that score or **hold** for a potentially better one later in the scoring week. This project compares a completed game's result against a player's own self-relative ceiling (`GREATEST(35, their mean + 0.5*their stddev)`) — not a flat league-wide bar — to flag it as **LOCK**, **HOLD**, or **PASS**.
 
 ## Tech Stack
 
-- **Language:** Python 3
+- **Language:** Python 3.13
 - **Database:** PostgreSQL
 - **Version Control:** Git & GitHub CLI (`gh`)
 
 ## Data Sources
 
-- **`nba_api`** (stats.nba.com) — historical player/team stats, game logs, rolling performance metrics. Core engine.
-- **Sleeper API** (`api.sleeper.app`, free, no auth) — league scoring settings and roster data, used to convert raw stats into actual fantasy points per your league's rules.
-- **`nbainjuries`** (github.com/mxufc29/nbainjuries) — official NBA injury/rest report data, used to flag availability risk for upcoming games.
+- **`nba_api`** (stats.nba.com) — historical and daily player/team stats, game logs, box scores, schedule, and scoreboard data. Core engine. Currently on `BoxScoreTraditionalV3`/`ScoreboardV3` — both V2 predecessors were confirmed to return no real data for the 2025-26 season.
+- **Sleeper API** (`api.sleeper.app`, free, no auth) — league scoring settings and roster data, used to convert raw stats into actual fantasy points per your league's rules. **Not yet integrated** — see Open Items in `methodology_notes.md`.
+- **`nbainjuries`** (github.com/mxufc29/nbainjuries) — official NBA injury/rest report data, cross-referenced daily to flag whether an absence was injury-explained or a coach's decision.
 
-Back-to-back and home/away context are derived from `nba_api` game log dates and matchup fields directly — no additional source required.
+Back-to-back and home/away context are derived from `nba_api` schedule data directly.
 
 ## Folder Structure
 
 ```text
 two_words/
-├── cleaning_logs/   # Records/logs of data-cleaning runs for auditing and debugging
+├── cleaning_logs/   # Ambiguous name-matching logs from build_gap_reasons.py, for manual review
 ├── config/          # Environment and connection settings (DB credentials, constants)
 ├── data/            # Raw and processed data files (ignored by git where applicable)
-├── docs/            # Project documentation, diagrams, and notes
-├── models/          # Schema/ORM definitions and statistical model logic
+├── docs/            # Project documentation, diagrams, methodology_notes.md
+├── models/          # The deployed decision-engine schema (ownable_player_pool, player_tiers,
+│                     percentage_to_lock, game_lock_signal, player_injury_return_flags,
+│                     weekly_outcome_simulation)
 ├── notebooks/       # Exploratory analysis and prototyping (Jupyter)
-├── schema/          # SQL DDL / migration files defining the database structure
-├── scripts/         # Standalone ETL and utility scripts (ingestion, processing)
-└── tests/           # Unit and integration tests
+├── schema/          # Supporting schema: tables/, fixes/ (one-time migrations), analysis/
+├── scripts/         # ETL, daily ingestion, calibration, and the callable decision-engine input
+└── tests/           # tests/injuries/ and tests/retired/ hold superseded/rejected experiments
+                       kept as a record; live tests run from tests/ directly
 ```
 
 ## Getting Started
 
-<!-- Add this section later — expand once database specs are finalized -->
-Development environment: VS Code on macOS (M1), PostgreSQL installed via Homebrew.
+Development environment: VS Code on macOS (Apple Silicon), Python 3.13 via `pyenv`, PostgreSQL via Homebrew. DB connection settings live in `config/.env` (gitignored) and are read by `scripts/db_connection.py`.
 
-Database connection specs and setup steps to be documented here once finalized.
+Run any script from the project root, e.g.:
+```bash
+python scripts/load_daily_game_logs.py [YYYY-MM-DD]
+python scripts/lock_decision_input.py PLAYER_ID --game-id GAME_ID --season-id 22024 --game-date YYYY-MM-DD
+```
+
+Run any `schema/`/`models/` `.sql` file via `psql`, e.g.:
+```bash
+psql -h 127.0.0.1 -U <user> -d postgres -f models/game_lock_signal.sql
+```
+
+For the full deploy order of the core decision-engine files (`percentage_to_lock.sql` → `fit_hold_value_curve_by_tier.py` → `game_lock_signal.sql`) and daily-run order, see `methodology_notes.md`.
 
 ## License
 
