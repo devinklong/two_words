@@ -1,22 +1,8 @@
 -- Season-to-date rolling pace/ORtg/DRtg/NetRtg per team, as of BEFORE
--- each game (not including that game itself -- this is "what did the
--- team look like walking into this game", which is what a forward-
--- looking HOLD decision actually needs; including the game itself
--- would leak its own outcome into its own "prior form" number).
---
--- Built on team_game_advanced_stats, not raw team_game_stats -- that
--- view already has the possession estimates and points computed
--- per-game, so this just sums those across games and computes the
--- rate ONCE from the summed totals. This is deliberate: summing raw
--- totals then dividing is correct; averaging each game's already-
--- computed per-game rate is not (it weights a 60-possession game the
--- same as a 110-possession game). Same discipline as the per-game view.
---
--- games_included counts how many PRIOR games went into each row's
--- numbers. Early season rows will have a small games_included (or
--- games_included = 0, which yields NULL rates -- no data to divide
--- by yet). Treat rows with a low games_included as low-confidence,
--- same spirit as the per-game view's "one game is noisy" caveat.
+-- each game (excludes the game itself, avoiding leakage). Sums raw
+-- totals across games then computes the rate once, rather than
+-- averaging per-game rates. games_included = 0 means no prior games
+-- yet (rates come back NULL); low games_included = low confidence.
 
 DROP VIEW IF EXISTS team_rolling_season_to_date_stats;
 
@@ -59,17 +45,13 @@ FROM with_basis;
 
 SELECT COUNT(*) FROM team_rolling_season_to_date_stats;
 
--- Row count should match team_game_advanced_stats 1:1 (one rolling
--- snapshot per team per game, same as the per-game view)
+-- Row count should match team_game_advanced_stats 1:1.
 SELECT
     (SELECT COUNT(*) FROM team_game_advanced_stats) AS advanced_stats_rows,
     (SELECT COUNT(*) FROM team_rolling_season_to_date_stats) AS rolling_rows;
 -- EXPECT: rolling_rows == advanced_stats_rows
 
--- Sanity check: games_included should be 0 for each team's first game
--- of a season, and strictly increasing by 1 per subsequent game within
--- that team+season -- a gap or reset mid-season means the window/
--- partition logic broke.
+-- games_included should start at 0 and increase by 1 per game within a team+season.
 SELECT team_id, season_id, game_date, games_included,
        games_included - LAG(games_included) OVER (
            PARTITION BY team_id, season_id ORDER BY game_date
@@ -80,9 +62,7 @@ LIMIT 20;
 -- EXPECT: games_included_delta = 1 for every row except each
 -- team+season's first (which should have games_included = 0)
 
--- Spot check: pull Denver's rolling numbers heading into the 3/7/25
--- game (game_id 0022400909) to eyeball against the per-game view's
--- already-validated single-game numbers for the same game.
+-- Spot check: Denver's rolling numbers heading into 3/7/25 vs that game's single-game numbers.
 SELECT tgas.game_date, tgas.pace AS single_game_pace,
        tgas.off_rating AS single_game_off_rating,
        rss.games_included, rss.pace AS season_to_date_pace,
@@ -91,4 +71,4 @@ FROM team_game_advanced_stats tgas
 JOIN team_rolling_season_to_date_stats rss
     ON rss.game_id = tgas.game_id AND rss.team_id = tgas.team_id
 WHERE tgas.game_id = '0022400909' AND tgas.team_id = 1610612743;
--- Denver's team_id, per the earlier team_game_advanced_stats query result
+-- 1610612743 is Denver's team_id.

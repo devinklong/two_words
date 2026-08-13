@@ -1,38 +1,17 @@
 """
-tests/test_advanced_stats_vs_basketball_reference.py
+tests/team_advanced_stats/test_advanced_stats_vs_basketball_reference.py
 
-`team_game_advanced_stats` computes ONE possessions formula (simplified:
-FGA - OREB + TOV + 0.4*FTA, averaged both teams, no full Basketball-
-Reference rebounding-rate-weighted alternative -- that was never built).
-So this isn't an internal formula-vs-formula diff. It's exactly what the
-view's own header comment calls for: cross-check pace/off_rating/
-def_rating against a real published source before trusting the formula
-for anything beyond exploration.
-
-IMPORTANT CAVEAT (read before adding more games): the view's `pace`
-column is NOT normalized to 48 minutes -- it's the raw possession
-estimate. Basketball-Reference's own ORtg/DRtg are computed against that
-same kind of raw (non-normalized) possession estimate, so those SHOULD
-line up closely. But BBRef's separately-published "Pace" stat IS
-normalized to 48 minutes, so it will NOT match this view's `pace` column
-directly -- especially on OT games, where 48-minute normalization vs.
-raw possessions diverge the most. Don't treat a pace mismatch as a bug
-unless you've also renormalized one side.
-
-This only validates off_rating / def_rating / net_rating against BBRef.
-Pace is printed for inspection but not asserted against BBRef's Pace stat,
-since that's a genuinely different (normalized) quantity.
-
-Add more KNOWN_GAMES entries as you spot-check more games -- non-OT
-games are the more useful additions, since they remove the normalization
-question entirely (pace SHOULD match BBRef's Pace stat too when the game
-is exactly 48 minutes / 240 team-minutes).
+Cross-checks team_game_advanced_stats' off_rating/def_rating/net_rating
+against real Basketball-Reference values (pace is printed but not
+asserted, since BBRef's Pace stat is 48-min-normalized and this view's
+isn't). Add more KNOWN_GAMES entries to spot-check more games --
+non-OT games validate pace too.
 """
 
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parents[1]/ "scripts"))  # project root (tests/ is one level down) # project root, matches existing test-suite convention
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # project root, matches existing test-suite convention
 from db_connection import get_connection
 
 TOLERANCE = {
@@ -67,8 +46,7 @@ KNOWN_GAMES = [
 
 
 def fetch_game_rows(cur, game_id):
-    """Pull both teams' rows for a game, joined to `teams` for the abbreviation/name
-    so we can match against BBRef's team labels."""
+    """Pull both teams' rows for a game, joined to `teams` for the name."""
     query = """
         SELECT tgas.game_id, tgas.team_id, tgas.is_home, tgas.pts, tgas.opp_pts,
                tgas.team_possessions_est, tgas.opp_possessions_est, tgas.pace,
@@ -85,8 +63,7 @@ def fetch_game_rows(cur, game_id):
 
 
 def match_row_to_expected(db_row, expected_by_abbrev):
-    """Match a DB row to its expected BBRef values by points scored (safer than
-    guessing abbreviation-from-full_name formatting)."""
+    """Match a DB row to its expected BBRef values by points scored."""
     for abbrev, exp in expected_by_abbrev.items():
         if db_row["pts"] == exp["pts"]:
             return abbrev, exp
@@ -124,7 +101,7 @@ def run():
                 continue
 
             for metric in ("off_rating", "def_rating"):
-                actual = float(db_row[metric])
+                actual = db_row[metric]
                 exp_val = expected[metric]
                 diff = abs(actual - exp_val)
                 total_checks += 1
@@ -135,7 +112,7 @@ def run():
                 print(f"    {metric:12s} computed={actual:7.2f}  bbref={exp_val:7.2f}  "
                       f"diff={diff:5.2f}  [{status}]")
 
-            net_actual = float(db_row["net_rating"])
+            net_actual = db_row["net_rating"]
             net_expected = expected["off_rating"] - expected["def_rating"]
             net_diff = abs(net_actual - net_expected)
             total_checks += 1
