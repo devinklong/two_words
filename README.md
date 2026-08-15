@@ -13,7 +13,34 @@ A Python + PostgreSQL data pipeline that analyzes NBA game logs to compute a **L
 - Daily `nba_api` ingestion (box scores, schedule, scoreboard) keeps the database current without manual backfilling, verified end-to-end and spot-checked at scale
 - A callable input model (`scripts/lock_decision_input.py`) checks the database first and only computes live when a game genuinely isn't loaded yet
 
-**Now starting v2.0**: team-level context (pace, ratings) as a real layer on top of the existing player-specific model. See `methodology_notes.md`'s Open Items.
+**v2.0 closed (8/12/26), exhaustively negative.** Tested team-level context (pace, ratings, opponent defense, home/away) as a layer on the player-specific model — every candidate signal either failed significance or collapsed once confounds (schedule position, team composition) were controlled for. No team-level signal cleared the bar for production. Full test log in `methodology_notes.md`.
+
+**v3.0 in progress (started 8/12/26): Sleeper league integration.** League/roster/transaction data, the player ID crosswalk, and scoring-settings-as-config are all live and verified. Historical matchup standings for the 2025-26 season specifically hit an unresolved Sleeper API data-reliability issue — see **Known Limitations** below. Forward-looking features (opponent roster scouting, waiver-wire target finding) don't depend on the affected data and are next up.
+
+## Known limitation: 2025-26 historical matchup points (Lock-In Mode)
+
+This league runs Sleeper's **Lock-In Mode** (one game per player per
+week counts, manually selected or auto-defaulted to the week's final
+game). For the 2025-26 season specifically, Sleeper's public API
+returns historical weekly point values that don't reliably match the
+league's real record for weeks 1-18, and — confirmed via an
+independently-built verification script — the API itself returns
+inconsistent values across separate calls for the SAME historical
+week. 2024-25 data is unaffected and has matched the real record
+exactly on every check.
+
+**Root cause not confirmed.** Six theories tested and ruled out with
+direct evidence (roster changes, transaction volume, IR/taxi moves,
+season status, and a from-scratch independent re-verification that
+shares no code with the main pipeline). Full investigation log,
+including exactly what was tested and what's still open, in
+`SLEEPER_LOCKIN_METHODOLOGY.md`.
+
+**Practical effect:** treat any 2025-26 week-1-through-18 value pulled
+from `sleeper_matchup_points_snapshots` / `historical_matchup_results`
+as unverified until manually checked against the app. Season-level
+aggregates (`sleeper_rosters.settings` — wins/losses/fpts) are
+unaffected and confirmed accurate.
 
 ## Overview
 
@@ -28,10 +55,14 @@ In game-selection formats, managers must decide after a player's game whether to
 ## Data Sources
 
 - **`nba_api`** (stats.nba.com) — historical and daily player/team stats, game logs, box scores, schedule, and scoreboard data. Core engine. Currently on `BoxScoreTraditionalV3`/`ScoreboardV3` — both V2 predecessors were confirmed to return no real data for the 2025-26 season.
-- **Sleeper API** (`api.sleeper.app`, free, no auth) — league scoring settings and roster data, used to convert raw stats into actual fantasy points per your league's rules. **Not yet integrated** — see Open Items in `methodology_notes.md`.
+- **Sleeper API** (`api.sleeper.app`, free, no auth) — league settings, rosters, transactions, and matchup structure, converting raw stats into actual fantasy points per this league's rules and identifying who's rostered/who's facing whom each week. Integrated in v3.0. Own-computed weekly points are independently verified against real Sleeper scores; Sleeper's own historical points data has one known reliability gap — see Known Limitations.
 - **`nbainjuries`** (github.com/mxufc29/nbainjuries) — official NBA injury/rest report data, cross-referenced daily to flag whether an absence was injury-explained or a coach's decision.
 
 Back-to-back and home/away context are derived from `nba_api` schedule data directly.
+
+## Known Limitations
+
+**2025-26 historical matchup points (Sleeper Lock-In Mode).** This league runs Sleeper's Lock-In Mode (one game per player per week counts, manually selected or auto-defaulted). For 2025-26 weeks 1-18 specifically, Sleeper's public API returns historical point values that don't reliably match the league's real record, and an independent, from-scratch verification script confirmed the API itself returns inconsistent values across separate calls for the same historical week. Root cause not confirmed after six tested and ruled-out theories. 2024-25 data and season-level records (`sleeper_rosters.settings`) are unaffected. Full investigation log: `docs/SLEEPER_LOCKIN_METHODOLOGY.md`.
 
 ## Folder Structure
 
@@ -40,13 +71,16 @@ two_words/
 ├── cleaning_logs/   # Ambiguous name-matching logs from build_gap_reasons.py, for manual review
 ├── config/          # Environment and connection settings (DB credentials, constants)
 ├── data/            # Raw and processed data files (ignored by git where applicable)
-├── docs/            # Project documentation, diagrams, methodology_notes.md
+├── docs/            # Project documentation, diagrams, methodology_notes.md, SLEEPER_LOCKIN_METHODOLOGY.md
 ├── models/          # The deployed decision-engine schema (ownable_player_pool, player_tiers,
 │                     percentage_to_lock, game_lock_signal, player_injury_return_flags,
 │                     weekly_outcome_simulation)
 ├── notebooks/       # Exploratory analysis and prototyping (Jupyter)
-├── schema/          # Supporting schema: tables/, fixes/ (one-time migrations), analysis/
-├── scripts/         # ETL, daily ingestion, calibration, and the callable decision-engine input
+├── schema/          # Supporting schema: tables/ (raw + Sleeper ingestion), views/ (Sleeper-derived
+│                     views: crosswalk, roster/transaction/matchup, historical standings),
+│                     fixes/ (one-time migrations), analysis/
+├── scripts/         # ETL, daily ingestion (nba_api + Sleeper), calibration, and the callable
+│                     decision-engine input
 └── tests/           # tests/injuries/ and tests/retired/ hold superseded/rejected experiments
                        kept as a record; live tests run from tests/ directly
 ```

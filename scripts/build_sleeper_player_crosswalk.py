@@ -9,6 +9,16 @@ matchups/transactions (not all ~500 NBA players Sleeper tracks), pulled
 from /players/nba, per Sleeper's own guidance to call that endpoint
 sparingly. Ambiguous or failed matches are logged, not guessed at.
 
+League scoping: pulls every league_id from sleeper_leagues instead of a
+hardcoded list. This is a dynasty league (previous_league_id chain never
+resets), so a hardcoded list needs a manual edit every season a new
+league_id shows up -- confirmed 8/13/26 this was silently missing 30
+rookies drafted into the 2026-27 league (league_id not yet in the old
+hardcoded LEAGUE_IDS), since get_league_player_ids() never even looked
+at their roster rows. Reading league_ids from sleeper_leagues instead
+means this stays correct automatically once backfill_sleeper_league.py
+has synced the new season -- no edit needed here.
+
 ASSUMPTION flagged for review: assumes `players` has a `full_name`
 column to match against -- adjust NBA_NAME_QUERY below if the real
 schema differs.
@@ -26,10 +36,6 @@ from db_connection import get_connection
 import requests
 
 BASE_URL = "https://api.sleeper.app/v1"
-LEAGUE_IDS = [
-    "1113487058661744640",  # 2024
-    "1214984705477185536",  # 2025
-]
 
 NBA_NAME_QUERY = "SELECT player_id, full_name FROM players;"  # ASSUMPTION -- see docstring
 
@@ -57,21 +63,30 @@ def is_duplicate_placeholder(full_name):
     return bool(full_name) and "duplicate" in full_name.lower()
 
 
-def get_league_player_ids(cur):
+def get_all_league_ids(cur):
+    """Every league_id in the dynasty chain, read from sleeper_leagues instead of a
+    hardcoded list -- self-updating each season as backfill_sleeper_league.py syncs
+    new league_ids in, no manual edit needed here."""
+    cur.execute("SELECT league_id FROM sleeper_leagues;")
+    return [row[0] for row in cur.fetchall()]
+
+
+def get_league_player_ids(cur, league_ids):
     """Collects every Sleeper player_id appearing in this league's rosters, matchups, or
-    transactions, across both seasons -- the scoping that keeps the crosswalk small."""
+    transactions, across every season in the chain -- the scoping that keeps the
+    crosswalk small."""
     ids = set()
 
-    cur.execute("SELECT players, starters FROM sleeper_rosters WHERE league_id = ANY(%s);", (LEAGUE_IDS,))
+    cur.execute("SELECT players, starters FROM sleeper_rosters WHERE league_id = ANY(%s);", (league_ids,))
     for players, starters in cur.fetchall():
         ids.update(players or [])
         ids.update(starters or [])
 
-    cur.execute("SELECT players FROM sleeper_matchups WHERE league_id = ANY(%s);", (LEAGUE_IDS,))
+    cur.execute("SELECT players FROM sleeper_matchups WHERE league_id = ANY(%s);", (league_ids,))
     for (players,) in cur.fetchall():
         ids.update(players or [])
 
-    cur.execute("SELECT adds, drops FROM sleeper_transactions WHERE league_id = ANY(%s);", (LEAGUE_IDS,))
+    cur.execute("SELECT adds, drops FROM sleeper_transactions WHERE league_id = ANY(%s);", (league_ids,))
     for adds, drops in cur.fetchall():
         if adds:
             ids.update(adds.keys())
@@ -105,7 +120,10 @@ def run():
     conn = get_connection()
     cur = conn.cursor()
 
-    league_player_ids = get_league_player_ids(cur)
+    league_ids = get_all_league_ids(cur)
+    print(f"{len(league_ids)} league_id(s) found in sleeper_leagues: {league_ids}")
+
+    league_player_ids = get_league_player_ids(cur, league_ids)
     print(f"{len(league_player_ids)} distinct Sleeper player_ids found across this league's data.")
 
     all_sleeper_players = fetch_all_nba_players()

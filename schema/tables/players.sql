@@ -38,4 +38,3 @@ SELECT * FROM players WHERE full_name ILIKE '%raynaud%';
 
 -- Eyeball a sample
 SELECT * FROM players ORDER BY full_name LIMIT 10;
-

@@ -7,6 +7,12 @@ the already-validated week_start_date/week_end_date boundaries from
 game_fantasy_scores_weekly_effective) and syncs only that week's matchups
 and recent transactions, plus a full roster refresh (rosters are small
 and change any day, so always refreshing them in full is cheap and safe).
+Also captures a CHANGE-LOG snapshot of Sleeper's own points into
+sleeper_matchup_points_snapshots -- see that table's header for why this
+is a deliberate, isolated exception to the project's hard rule against
+storing Sleeper's own scoring. This function never touches
+sleeper_matchups, game_logs, or any scoring-formula table -- it only
+reads from Sleeper's API and writes to its own standalone table.
 
 No runner/scheduler decided yet -- this is importable logic, callable
 manually, from a script, or wired to cron later without changing how it
@@ -16,12 +22,13 @@ historical 2024/2025 dates, since those boundaries are already proven.
 """
 
 import sys
+import json
 from pathlib import Path
 from datetime import date
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from db_connection import get_connection
-from backfill_sleeper_league import upsert_rosters, upsert_matchups, upsert_transactions
+from backfill_sleeper_league import upsert_rosters, upsert_matchups, upsert_transactions, fetch
 
 
 def get_current_week(cur, season_id, as_of_date=None):
@@ -41,9 +48,65 @@ def get_current_week(cur, season_id, as_of_date=None):
     return row[0] if row else None
 
 
+def sync_matchup_points_snapshot(cur, league_id, weeks):
+    """Captures Sleeper's own already-computed points for each roster/week,
+    ONLY when the value has changed since the last snapshot recorded for
+    that roster/week -- a change-log, not one row per sync. Checks before
+    writing; does not iterate/append blindly.
+
+    Fully isolated: writes only to sleeper_matchup_points_snapshots, never
+    touches sleeper_matchups, game_logs, or any scoring-formula table --
+    see that table's header comment for the full reasoning. Returns
+    (checked_count, inserted_count) so callers can report how many
+    roster/weeks were checked vs. how many actually changed."""
+    total_checked, total_inserted = 0, 0
+
+    for week in weeks:
+        matchups = fetch(f"/league/{league_id}/matchups/{week}")
+        if not matchups:
+            continue
+
+        for m in matchups:
+            roster_id = m["roster_id"]
+            points = m.get("points")
+            starters_points = m.get("starters_points") or []
+            players_points = m.get("players_points") or {}
+            total_checked += 1
+
+            cur.execute("""
+                SELECT points, starters_points, players_points
+                FROM sleeper_matchup_points_snapshots
+                WHERE league_id = %s AND week = %s AND roster_id = %s
+                ORDER BY synced_at DESC
+                LIMIT 1;
+            """, (league_id, week, roster_id))
+            last = cur.fetchone()
+
+            changed = (
+                last is None
+                or last[0] != points
+                or list(last[1] or []) != list(starters_points)
+                or (last[2] or {}) != players_points
+            )
+
+            if changed:
+                cur.execute("""
+                    INSERT INTO sleeper_matchup_points_snapshots
+                        (league_id, week, roster_id, points, starters_points, players_points)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                """, (
+                    league_id, week, roster_id, points,
+                    starters_points, json.dumps(players_points),
+                ))
+                total_inserted += 1
+
+    return total_checked, total_inserted
+
+
 def sync_current_week(cur, league_id, season_id, as_of_date=None):
     """Syncs rosters in full, plus matchups/transactions for the current week
-    and the prior week (to catch late-settling waivers/corrections)."""
+    and the prior week (to catch late-settling waivers/corrections). Also
+    checks/records a points snapshot for those same weeks."""
     week = get_current_week(cur, season_id, as_of_date)
     if week is None:
         print(f"  No active week for season_id={season_id} on {as_of_date or date.today()} "
@@ -58,6 +121,10 @@ def sync_current_week(cur, league_id, season_id, as_of_date=None):
 
     n_matchups = upsert_matchups(cur, league_id, weeks=weeks_to_sync)
     print(f"  {n_matchups} matchup rows synced")
+
+    n_checked, n_inserted = sync_matchup_points_snapshot(cur, league_id, weeks_to_sync)
+    print(f"  {n_checked} roster/week points checked, {n_inserted} new snapshot(s) "
+          f"recorded (changed since last check)")
 
     n_transactions = upsert_transactions(cur, league_id, rounds=weeks_to_sync)
     print(f"  {n_transactions} transactions synced")
