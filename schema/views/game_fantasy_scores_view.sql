@@ -171,3 +171,10 @@ FROM game_fantasy_scores gfs
 JOIN players p ON p.player_id = gfs.player_id
 ORDER BY gfs.fantasy_score DESC
 LIMIT 10;
+
+SELECT ps.season_id, ps.games_played, ps.avg_fantasy_score, ps.stddev_fantasy_score,
+       ps.avg_fantasy_score + 1.25*ps.stddev_fantasy_score AS spike_calc
+FROM player_season_fantasy_stats ps
+JOIN sleeper_player_crosswalk c ON c.nba_player_id = ps.player_id
+WHERE c.sleeper_full_name = 'Khaman Maluach'
+ORDER BY ps.season_id;
