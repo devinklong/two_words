@@ -4,11 +4,13 @@ list. Run once after schema/players.sql; safe to rerun (ON CONFLICT DO NOTHING).
 """
 
 import pandas as pd
+import sys
 from psycopg2.extras import execute_values
-
+from pathlib import Path
 from nba_api.stats.static import players as nba_players
 from db_connection import get_connection
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 def build_players_df() -> pd.DataFrame:
     all_players = nba_players.get_players()

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from datetime import date
 
-sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from db_connection import get_connection
 from sleeper_daily_sync import get_current_week
 

@@ -21,12 +21,13 @@ import sys
 from datetime import date, timedelta
 
 from nba_api.stats.static import teams as nba_teams
-
+from pathlib import Path
 from get_team_schedule import get_team_schedule
 from data_cleaning_team_schedule import clean_team_schedule
 from load_team_schedule import load_team_schedule, TEAM_SCHEDULE_COLUMNS, build_team_lookup
 from db_connection import get_connection
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 def season_for_date(d: date) -> str:
     """'2026-02-14' -> '2025-26'. Oct-cutoff heuristic -- see file docstring."""

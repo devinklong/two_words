@@ -38,7 +38,7 @@ import sys
 from datetime import date, timedelta
 
 from nba_api.stats.endpoints import boxscoretraditionalv3
-
+from pathlib import Path
 from data_cleaning_boxscore import clean_boxscore
 from get_scoreboard_games import get_completed_games_with_home_away
 from build_gap_reasons import build_gap_reasons
@@ -46,6 +46,7 @@ from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_w
 from load_game_logs import load_game_logs, GAME_LOGS_COLUMNS
 from db_connection import get_connection
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 def season_for_date(d: date) -> str:
     """'2026-02-14' -> '22025'. Same Oct-cutoff heuristic as

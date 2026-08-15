@@ -17,11 +17,13 @@ Example: python scripts/backfill_single_player.py "Alex Caruso" 2022-23
 import sys
 
 from nba_api.stats.static import players as nba_players
-
+from pathlib import Path
 from load_game_logs import build_team_lookup, fetch_and_clean_one_player, load_game_logs
 from build_gap_reasons import build_gap_reasons
 from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_weekly_effective
 from db_connection import get_connection
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 
 def season_start_date(season: str) -> str:

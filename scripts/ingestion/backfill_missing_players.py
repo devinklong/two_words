@@ -14,12 +14,17 @@ Run: python scripts/backfill_missing_players.py
 """
 
 import time
+import sys
+
+from pathlib import Path
 
 from nba_api.stats.endpoints import commonplayerinfo
 from psycopg2.extras import execute_values
 
 from db_connection import get_connection
 from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_weekly_effective
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 SLEEP_SECONDS_BETWEEN_CALLS = 0.6
 

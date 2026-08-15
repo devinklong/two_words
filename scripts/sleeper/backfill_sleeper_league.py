@@ -15,7 +15,7 @@ import time
 import json
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from db_connection import get_connection
 
 import requests

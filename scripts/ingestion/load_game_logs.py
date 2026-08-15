@@ -11,12 +11,15 @@ import time
 
 import pandas as pd
 from psycopg2.extras import execute_values
+from pathlib import Path
 
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import playergamelog, commonteamroster
 
 from data_cleaning_nba_api import clean_gamelog
 from db_connection import get_connection
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 GAME_LOGS_COLUMNS = [
     "game_id", "player_id", "team_id", "opponent_team_id", "season_id",

@@ -19,7 +19,7 @@ Usage: python scripts/backfill_sleeper_points_snapshots.py
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from db_connection import get_connection
 from sleeper_daily_sync import sync_matchup_points_snapshot
 

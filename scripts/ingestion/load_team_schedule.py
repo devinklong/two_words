@@ -11,12 +11,14 @@ import time
 
 import pandas as pd
 from psycopg2.extras import execute_values
-
+from pathlib import Path
 from nba_api.stats.static import teams as nba_teams
 
 from get_team_schedule import get_team_schedule
 from data_cleaning_team_schedule import clean_team_schedule
 from db_connection import get_connection
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 TEAM_SCHEDULE_COLUMNS = [
     "game_id", "season_id", "team_id", "opponent_team_id",

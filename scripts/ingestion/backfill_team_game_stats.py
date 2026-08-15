@@ -27,12 +27,15 @@ Run (one season):         python scripts/backfill_team_game_stats.py --season-id
 
 import argparse
 import time
+import sys
 
 from nba_api.stats.endpoints import boxscoretraditionalv3
-
+from pathlib import Path
 from data_cleaning_team_boxscore import clean_team_boxscore
 from get_scoreboard_games import get_completed_games_with_home_away
 from db_connection import get_connection
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 SLEEP_SECONDS_BETWEEN_CALLS = 0.6
 
