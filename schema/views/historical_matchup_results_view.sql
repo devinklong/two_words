@@ -123,8 +123,6 @@ FROM historical_standings
 GROUP BY owner_name
 ORDER BY wins DESC;
 
-ORDER BY s.week, s.synced_at;
-
 -- sweetdiddlydee's full 2025 season, week by week, real opponent + real result
 SELECT hmr.week, hmr.owner_name, hmr.team_points, hmr.opponent_owner_name,
        hmr.opponent_points, hmr.result

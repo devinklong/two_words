@@ -8,7 +8,9 @@
 
 **v1.2 — Made the tool usable in real time, not just descriptive (complete 8/11/26).** Daily `nba_api` ingestion for box scores, schedules, and scoreboard data — including migrating off two endpoints (`BoxScoreTraditionalV2`, `ScoreboardV2`) that turned out to return no real data at all for the 2025-26 season, not just "deprecated." `gap_reasons` and the `game_fantasy_scores_weekly_effective` sync are chained into every `game_logs` insert path (daily load, both backfill scripts), keeping derived data current without manual tracking. `game_fantasy_scores_weekly_effective` itself was redesigned from a full-rebuild materialized view into an incrementally-synced table. A Python input model (`lock_decision_input.py`) checks the database first and only falls back to a live pull or manual stat entry when a game genuinely isn't loaded yet, with `team_id` auto-resolved from the player's own history. The `ScoreboardV3` home/away derivation was spot-checked at scale (43 games across 8 dates spanning season openers, holiday slates, and end-of-season rest games) with zero mismatches.
 
-**v2.0 — Team-level data (starting).** See "Open Items" below.
+**v2.0 — Team-level data (CLOSED 8/12/26, exhaustively negative).** Tested team pace/rating stats (pace, ORtg/DRtg/NetRtg, own+opponent, pooled + confound-controlled + targeted backtest) as a layer on the player-based `lock_bar`. Every candidate signal — opponent def_rating, opponent pace, own off_rating, B2B, home/away — either failed significance or collapsed once confounds (schedule position, team composition) were controlled for. No team-level signal cleared the bar for production. Full 22-test log in `v2_roadmap_section.md` item 9.
+
+**v3.0 — Sleeper league integration (CLOSED 8/15/26).** Full Sleeper API integration: raw ingestion (leagues/rosters/users/matchups/transactions), player ID crosswalk (394 matched), scoring-settings-as-config, roster/ownership tracking, historical matchup standings, full relationship diagram, opponent threat scouting (`opponent_scout.py`), waiver-wire target finder (`waiver_wire_finder.py`). 2025-26 weeks 1-18 hit an unresolved Sleeper API data-reliability issue (root cause never confirmed after 6 tested theories) — resolved practically via manual re-entry, hand-verified against the app's real record; full writeup in `docs/step6_verification_results.md`. See `v3_roadmap_sleeper_integration.md` for the full step-by-step log.
 
 ---
 
@@ -50,6 +52,6 @@ Weekly-outcome simulator: walks each player's real games in order, banks the fir
 
 ## Open Items
 
-1. **Sleeper API integration** — needed for real roster/ownership data and real replacement-level values (currently a flat 30 placeholder). Not started.
-2. **v2.0 — Team-level data (starting now).** Team pace and rating stats — nearly every established NBA data-science reference site uses these, and the current model is entirely player-specific, blind to team context. Likely to become a real, measurable layer on top of the existing player-based `lock_bar`, not a replacement for it.
-3. **v2 parking lot (later):** position-based scoring, draft pick analysis.
+1. **Replacement-level value (PASS outcomes)** — still a flat 30 placeholder (see "Ownable Pool Simulation" above), not derived from real waiver-wire data. Sleeper roster/transaction data is live now (v3.0), so this is buildable — just not yet built.
+2. **v2 parking lot, genuinely untouched (not tried-and-rejected like v2.0's team signals):** position-based scoring; draft-pick analysis — Sleeper's `/traded_picks` endpoint was scoped in v3.0's roadmap but never actually ingested.
+3. **Non-functional backlog, not new scope:** consistency/refactor items (`docs/patch_list.md`) and correctness-risk items (`docs/architecture_risks.md`) — centralizing the duplicated `lock_bar` formula is the highest-priority item on either.

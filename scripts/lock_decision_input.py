@@ -22,7 +22,7 @@ Run (checks DB first, live pull as fallback, team_id auto-resolved):
 
 Run (manual stat line, skips the DB check and live pull entirely):
     python scripts/lock_decision_input.py PLAYER_ID --manual \
-        --pts 31 --oreb 6 --dreb 15 --ast 22 --stl 3 --blk 0 --tov 4 \
+        --pts 31 --oreb 4 --dreb 17 --ast 22 --stl 3 --blk 0 --tov 4 \
         --fgm 13 --fga 22 --ftm 2 --fta 3 --fg3m 3 \
         --season-id 22024 --game-date 2025-03-07
 
