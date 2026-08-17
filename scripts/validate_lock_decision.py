@@ -3,6 +3,13 @@ Reruns grid_search_lock_decision.py's simulation for ONE chosen
 (floor, ceiling_multiplier) against the VALIDATE split (2024-26) only.
 Deliberately separate and manual -- letting the search auto-validate would
 defeat the point of a held-out split.
+
+CENTRALIZED 8/15/26 (docs/patch_list.md #1): calls the shared lock_bar()
+SQL function, same as grid_search_lock_decision.py -- floor/mult are
+still explicit CLI args here since validating one specific candidate is
+the whole point. DEPLOY ORDER: lock_bar_function.sql must exist before
+running this.
+
 Run: python scripts/validate_lock_decision.py FLOOR CEILING_MULTIPLIER
 Example: python scripts/validate_lock_decision.py 35 0.5
 """
@@ -28,10 +35,7 @@ WITH pool AS (
 pool_games AS (
     SELECT
         gfswe.*,
-        GREATEST(
-            %(floor)s,
-            p.avg_fantasy_score + %(mult)s * p.stddev_fantasy_score
-        ) AS lock_bar
+        lock_bar(p.avg_fantasy_score, p.stddev_fantasy_score, %(floor)s, %(mult)s) AS lock_bar
     FROM game_fantasy_scores_weekly_effective gfswe
     JOIN pool p ON p.player_id = gfswe.player_id AND p.season_id = gfswe.season_id
     WHERE gfswe.season_id IN %(validate_seasons)s

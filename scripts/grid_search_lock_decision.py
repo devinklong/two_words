@@ -5,6 +5,13 @@ search and only varies the per-player lock decision -- an earlier version
 searched threshold for both pool membership and the lock decision at once,
 which let "edge over naive" partly just reflect a shrinking, more-elite
 population rather than real decision-quality improvement.
+
+CENTRALIZED 8/15/26 (docs/patch_list.md #1): calls the shared lock_bar()
+SQL function, passing floor/mult as explicit params since THIS script's
+whole purpose is testing different values of them -- lock_bar()'s
+defaults (35, 0.5) aren't used here on purpose. DEPLOY ORDER:
+lock_bar_function.sql must exist before running this.
+
 Run: python scripts/grid_search_lock_decision.py
 """
 
@@ -33,10 +40,7 @@ WITH pool AS (
 pool_games AS (
     SELECT
         gfswe.*,
-        GREATEST(
-            %(floor)s,
-            p.avg_fantasy_score + %(mult)s * p.stddev_fantasy_score
-        ) AS lock_bar
+        lock_bar(p.avg_fantasy_score, p.stddev_fantasy_score, %(floor)s, %(mult)s) AS lock_bar
     FROM game_fantasy_scores_weekly_effective gfswe
     JOIN pool p ON p.player_id = gfswe.player_id AND p.season_id = gfswe.season_id
     WHERE gfswe.season_id IN %(train_seasons)s

@@ -5,15 +5,20 @@
 -- nearly invisible, ~0.02 pts of edge across the ENTIRE ~50k-game
 -- population, because return games are only 1,653-7,669 of those games).
 --
+-- CENTRALIZED 8/15/26 (docs/patch_list.md #1): bar_no_penalty now calls
+-- the shared lock_bar() function (default floor=35/ceiling_multiplier=0.5)
+-- instead of hand-writing GREATEST(35, ...). DEPLOY ORDER:
+-- lock_bar_function.sql must exist before running this file.
+--
 -- LOGIC: restrict to is_return_game = TRUE rows that are pool-eligible
 -- and would have LOCKed under the pre-penalty rule (fantasy_score clears
--- GREATEST(35, mean + 0.5*stddev), the bar with NO injury penalty). Of
--- those, find which ones the +1.5 penalty actually FLIPS to HOLD/PASS.
--- For each flipped decision, check hindsight: did a LATER game that same
--- week score higher (best_remaining_score)? If yes, holding instead of
--- locking was the right call -- the penalty helped. If no, the player's
--- return game actually was their best score that week, and the penalty
--- wrongly talked the policy out of locking it -- the penalty hurt.
+-- the bar with NO injury penalty). Of those, find which ones the +1.5
+-- penalty actually FLIPS to HOLD/PASS. For each flipped decision, check
+-- hindsight: did a LATER game that same week score higher
+-- (best_remaining_score)? If yes, holding instead of locking was the
+-- right call -- the penalty helped. If no, the player's return game
+-- actually was their best score that week, and the penalty wrongly
+-- talked the policy out of locking it -- the penalty hurt.
 --
 -- This isolates the penalty's effect on the games it can possibly change
 -- (only return-game LOCK decisions near the bar), instead of averaging
@@ -40,8 +45,8 @@ WITH base AS (
 scored AS (
     SELECT
         *,
-        GREATEST(35, player_avg + 0.5 * player_std) AS bar_no_penalty,
-        GREATEST(35, player_avg + 0.5 * player_std) + 1.5 AS bar_with_penalty,
+        lock_bar(player_avg, player_std) AS bar_no_penalty,
+        lock_bar(player_avg, player_std) + 1.5 AS bar_with_penalty,
         MAX(fantasy_score) OVER (
             PARTITION BY player_id, season_id, week_number
             ORDER BY game_date DESC
@@ -100,8 +105,8 @@ WITH base AS (
 scored AS (
     SELECT
         *,
-        GREATEST(35, player_avg + 0.5 * player_std) AS bar_no_penalty,
-        GREATEST(35, player_avg + 0.5 * player_std) + 1.5 AS bar_with_penalty,
+        lock_bar(player_avg, player_std) AS bar_no_penalty,
+        lock_bar(player_avg, player_std) + 1.5 AS bar_with_penalty,
         MAX(fantasy_score) OVER (
             PARTITION BY player_id, season_id, week_number
             ORDER BY game_date DESC

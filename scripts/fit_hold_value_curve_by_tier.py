@@ -5,8 +5,16 @@ lock_bar, games_remaining_in_week 1-4) -- fitting on the full unconditioned
 population was found to under-predict real hold value by 10-16pp. Computes
 lock_bar/tier directly from player_season_fantasy_stats (not from
 game_lock_signal) to avoid a circular dependency, since this fit feeds INTO
-percentage_to_lock.sql, which feeds game_lock_signal. The lock_bar formula
-below must be kept in sync with game_lock_signal.sql's CASE logic by hand.
+percentage_to_lock.sql, which feeds game_lock_signal.
+
+CENTRALIZED 8/15/26 (docs/patch_list.md #1): calls the shared lock_bar()
+SQL function instead of hand-writing GREATEST(floor, avg + mult*stddev).
+ABSOLUTE_FLOOR/CEILING_MULTIPLIER below are unchanged and still the
+values passed in -- this file always uses the canonical validated
+values, so this is one of the "just pass params through" cases, not a
+grid-search case. DEPLOY ORDER: lock_bar_function.sql must exist before
+running this.
+
 Run: python scripts/fit_hold_value_curve_by_tier.py
 """
 
@@ -16,6 +24,8 @@ from scipy.optimize import curve_fit
 from db_connection import get_connection
 
 # MUST MATCH schema/lock_model/game_lock_signal.sql's lock_bar formula
+# (now indirectly, via lock_bar()'s own defaults -- these two constants
+# just need to match what lock_bar_function.sql defaults to)
 ABSOLUTE_FLOOR = 35
 CEILING_MULTIPLIER = 0.5
 
@@ -36,7 +46,7 @@ tiered_pool AS (
             WHEN rank_in_season <= 75 THEN '2_mid'
             ELSE '3_lower'
         END AS tier,
-        GREATEST(%(floor)s, avg_fantasy_score + %(mult)s * stddev_fantasy_score) AS lock_bar
+        lock_bar(avg_fantasy_score, stddev_fantasy_score, %(floor)s, %(mult)s) AS lock_bar
     FROM ranked_pool
 ),
 full_week_games AS (

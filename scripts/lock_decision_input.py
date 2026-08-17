@@ -16,6 +16,19 @@ of a very recent trade the DB hasn't caught up to yet, or a
 brand-new player with no game_logs history at all (auto-resolution has
 nothing to find in that case and will raise a clear error asking for it).
 
+CENTRALIZED 8/15/26 (docs/patch_list.md #1): the fallback path now calls
+the shared lock_bar() SQL function (models/lock_bar_function.sql) instead
+of reimplementing GREATEST(35, avg + 0.5*stddev) in Python -- same fix
+applied to models/game_lock_signal.sql. Removes the "MUST match
+game_lock_signal.sql's CASE logic exactly" risk entirely, since there's
+now only one place the formula is actually written.
+
+Also fixed 8/15/26: get_player_context() previously queried a `player_tiers`
+table that never existed as such -- corrected to query
+player_season_fantasy_stats, the real source (this was a real, if rarely-
+triggered, bug -- confirmed harmless once traced: the DB-first path
+covers almost every real use, so this fallback rarely fires).
+
 Run (checks DB first, live pull as fallback, team_id auto-resolved):
     python scripts/lock_decision_input.py PLAYER_ID --game-id GAME_ID \
         --season-id 22024 --game-date 2025-03-07
@@ -190,22 +203,40 @@ def fetch_live_stats(player_id: int, game_id: str, season_id: str) -> dict:
 
 
 # =========================
-# Player context (tier, lock_bar inputs) from the DB -- fallback only
+# Player context (tier, lock_bar inputs) from the DB -- fallback only.
+# CORRECTED 8/15/26: was querying a `player_tiers` table that never
+# existed under this name/shape for this purpose -- player_season_
+# fantasy_stats is the real source (confirmed against the live schema).
+# `tier` isn't a real stored column here either, so it's dropped.
 # =========================
 
 def get_player_context(conn, player_id: int, season_id: str) -> dict:
     cur = conn.cursor()
     cur.execute("""
-        SELECT tier, avg_fantasy_score, stddev_fantasy_score
-        FROM player_tiers
+        SELECT avg_fantasy_score, stddev_fantasy_score
+        FROM player_season_fantasy_stats
         WHERE player_id = %s AND season_id = %s
     """, (player_id, season_id))
     row = cur.fetchone()
     cur.close()
     if row is None:
-        raise ValueError(f"player_id={player_id} season_id={season_id} not in the ownable pool / player_tiers")
-    tier, avg, stddev = row
-    return {"tier": tier, "avg_fantasy_score": float(avg), "stddev_fantasy_score": float(stddev)}
+        raise ValueError(f"player_id={player_id} season_id={season_id} has no player_season_fantasy_stats row")
+    avg, stddev = row
+    return {"avg_fantasy_score": float(avg), "stddev_fantasy_score": float(stddev)}
+
+
+def get_lock_bar(conn, avg_fantasy_score: float, stddev_fantasy_score: float) -> float:
+    """
+    Calls the shared lock_bar() SQL function directly -- no args beyond
+    avg/stddev, so this gets the same validated defaults (floor=35,
+    ceiling_multiplier=0.5) as models/game_lock_signal.sql, with zero
+    risk of drift between the two.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT lock_bar(%s, %s)", (avg_fantasy_score, stddev_fantasy_score))
+    result = cur.fetchone()[0]
+    cur.close()
+    return float(result)
 
 
 def get_games_remaining(conn, team_id: int, game_date: str, season_id: str) -> dict:
@@ -249,13 +280,34 @@ def get_hold_probability(conn, tier: str, effective_games_remaining: float) -> f
     return float(result)
 
 
+def get_tier(conn, player_id: int, season_id: str) -> str | None:
+    """
+    Separate lookup, only needed for the HOLD path's percentage_to_lock
+    calc (which is keyed by tier, via player_tiers -- the REAL view of
+    that name). Kept separate from get_player_context() since a player
+    can have avg/stddev (player_season_fantasy_stats, full NBA universe)
+    without clearing the ownable-pool bar that player_tiers requires --
+    in that case tier is genuinely None, and percentage_to_lock can't be
+    computed (a HOLD decision on a non-pool player is an edge case this
+    fallback doesn't fully support; PASS/LOCK still work fine).
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT tier FROM player_tiers
+        WHERE player_id = %s AND season_id = %s
+    """, (player_id, season_id))
+    row = cur.fetchone()
+    cur.close()
+    return row[0] if row else None
+
+
 # =========================
 # Decision -- MUST match game_lock_signal.sql's CASE logic exactly.
 # Only reached on the fallback path (DB lookup came back empty).
 # =========================
 
 def decide(fantasy_score: float, context: dict, games_remaining: dict, conn) -> dict:
-    lock_bar = max(35, context["avg_fantasy_score"] + 0.5 * context["stddev_fantasy_score"])
+    lock_bar = get_lock_bar(conn, context["avg_fantasy_score"], context["stddev_fantasy_score"])
 
     if fantasy_score >= lock_bar:
         signal = "LOCK"
@@ -265,8 +317,12 @@ def decide(fantasy_score: float, context: dict, games_remaining: dict, conn) -> 
         percentage_to_lock = None
     else:
         signal = "HOLD"
-        hold_prob = get_hold_probability(conn, context["tier"], games_remaining["effective_games_remaining_in_week"])
-        percentage_to_lock = round(1 - hold_prob, 4)
+        tier = get_tier(conn, context["player_id"], context["season_id"])
+        if tier is None:
+            percentage_to_lock = None
+        else:
+            hold_prob = get_hold_probability(conn, tier, games_remaining["effective_games_remaining_in_week"])
+            percentage_to_lock = round(1 - hold_prob, 4)
 
     return {
         "source": "python_fallback",
@@ -274,7 +330,6 @@ def decide(fantasy_score: float, context: dict, games_remaining: dict, conn) -> 
         "lock_bar": round(lock_bar, 2),
         "fantasy_score": fantasy_score,
         "percentage_to_lock": percentage_to_lock,
-        "tier": context["tier"],
         "games_remaining_in_week": games_remaining["games_remaining_in_week"],
         "effective_games_remaining_in_week": games_remaining["effective_games_remaining_in_week"],
     }
@@ -288,7 +343,6 @@ def print_result(result: dict):
     tag = "[from database]" if result["source"] == "database" else "[computed in Python -- game not yet in DB]"
     print(f"\n{tag}")
     print(f"Fantasy score: {result['fantasy_score']}")
-    print(f"Tier: {result['tier']}")
     print(f"Lock bar: {result['lock_bar']}")
     print(f"Games remaining this week: {result['games_remaining_in_week']} "
           f"(effective: {result['effective_games_remaining_in_week']})")
@@ -327,6 +381,7 @@ def main():
         stats = {s: getattr(args, s) for s in MANUAL_STATS}
         fantasy_score = compute_fantasy_score(stats)
         context = get_player_context(conn, args.player_id, args.season_id)
+        context["player_id"], context["season_id"] = args.player_id, args.season_id
         team_id = args.team_id or resolve_team_id(conn, args.player_id)
         games_remaining = get_games_remaining(conn, team_id, args.game_date, args.season_id)
         result = decide(fantasy_score, context, games_remaining, conn)
@@ -342,6 +397,7 @@ def main():
             stats = fetch_live_stats(args.player_id, args.game_id, args.season_id)
             fantasy_score = compute_fantasy_score(stats)
             context = get_player_context(conn, args.player_id, args.season_id)
+            context["player_id"], context["season_id"] = args.player_id, args.season_id
             team_id = args.team_id or resolve_team_id(conn, args.player_id)
             games_remaining = get_games_remaining(conn, team_id, args.game_date, args.season_id)
             result = decide(fantasy_score, context, games_remaining, conn)

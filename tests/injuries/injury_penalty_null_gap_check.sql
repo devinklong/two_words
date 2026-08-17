@@ -6,6 +6,10 @@
 -- impossible if games_remaining_in_week and the window function agree
 -- on how many future games exist in the week -- this pulls those exact
 -- rows to see where the disagreement is.
+--
+-- CENTRALIZED 8/15/26 (docs/patch_list.md #1): bar_no_penalty now calls
+-- the shared lock_bar() function instead of hand-writing GREATEST(35, ...).
+-- DEPLOY ORDER: lock_bar_function.sql must exist before running this.
 
 WITH base AS (
     SELECT
@@ -27,8 +31,8 @@ WITH base AS (
 scored AS (
     SELECT
         *,
-        GREATEST(35, player_avg + 0.5 * player_std) AS bar_no_penalty,
-        GREATEST(35, player_avg + 0.5 * player_std) + 1.5 AS bar_with_penalty,
+        lock_bar(player_avg, player_std) AS bar_no_penalty,
+        lock_bar(player_avg, player_std) + 1.5 AS bar_with_penalty,
         MAX(fantasy_score) OVER (
             PARTITION BY player_id, season_id, week_number
             ORDER BY game_date DESC
