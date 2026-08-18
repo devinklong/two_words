@@ -33,35 +33,13 @@ TRAIN_SEASONS = ('22021', '22022', '22023')
 REPLACEMENT_LEVEL = 30
 
 TIER_QUERY = """
-WITH pool AS (
-    SELECT player_id, season_id, avg_fantasy_score, stddev_fantasy_score
-    FROM player_season_fantasy_stats
-    WHERE games_played >= 20
-      AND avg_fantasy_score + %(k_pool)s * stddev_fantasy_score >= %(t_pool)s
-),
-ranked_pool AS (
-    SELECT
-        p.*,
-        ROW_NUMBER() OVER (PARTITION BY p.season_id ORDER BY p.avg_fantasy_score DESC, p.player_id) AS rank_in_season
-    FROM pool p
-),
-tiered_pool AS (
-    SELECT
-        *,
-        CASE
-            WHEN rank_in_season <= 25 THEN '1_elite (top 25)'
-            WHEN rank_in_season <= 75 THEN '2_mid (26-75)'
-            ELSE '3_lower (76+)'
-        END AS tier
-    FROM ranked_pool
-),
-pool_games AS (
+WITH pool_games AS (
     SELECT
         gfswe.*,
-        tp.tier,
-        lock_bar(tp.avg_fantasy_score, tp.stddev_fantasy_score, %(floor)s, %(mult)s) AS lock_bar
+        pt.tier,
+        GREATEST(%(floor)s, pt.avg_fantasy_score + %(mult)s * pt.stddev_fantasy_score) AS lock_bar
     FROM game_fantasy_scores_weekly_effective gfswe
-    JOIN tiered_pool tp ON tp.player_id = gfswe.player_id AND tp.season_id = gfswe.season_id
+    JOIN player_tiers pt ON pt.player_id = gfswe.player_id AND pt.season_id = gfswe.season_id
     WHERE gfswe.season_id IN %(train_seasons)s
 ),
 first_lock AS (
