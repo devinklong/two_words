@@ -12,7 +12,7 @@ No version bump warranted for any of these — the project hasn't used
 patch-level version numbers anywhere; each folds into the current
 version's ongoing commit history, same as `fix_team_schedule_pk.sql`.
 
-## 1. Centralize `lock_bar` into a real Postgres function
+## 1. Centralize `lock_bar` into a real Postgres function - DONE 8/16/26
 
 `GREATEST(35, avg + 0.5*stddev)` is hand-copied across ~10 files
 (`lock_decision_input.py`, `fit_hold_value_curve_by_tier.py`,
@@ -28,7 +28,9 @@ everything else calls it.
 patch, rerun `weekly_outcome_simulation.sql` and confirm the edge is
 still exactly +1.71/+1.72 train/validate before calling it done.
 
-## 2. Rename `game_fantasy_scores_weekly_lock_signal`
+## 2. Rename `game_fantasy_scores_weekly_lock_signal` - DONE 8/17/26
+
+Renamed `game_fantasy_scores_weekly_lock_signal` → `game_fantasy_scores_weekly_percentage_to_lock`
 
 It doesn't compute a lock signal — that's `game_lock_signal`, one layer
 downstream. It computes `percentage_to_lock`. The name overlap caused a
@@ -36,7 +38,7 @@ real diagramming error this session. Pure rename; referenced in
 `percentage_to_lock.sql`'s CASCADE chain and several diagnostic files —
 one repo-wide grep-and-rename commit.
 
-## 3. Deduplicate pool/tier CTEs
+## 3. Deduplicate pool/tier CTEs - DONE 8/17/26
 
 `hold_value_by_tier_and_grw.sql`, `analyze_ceiling_penalty_by_tier.py`,
 `injury_penalty_targeted_check.sql`, `injury_penalty_null_gap_check.sql`
@@ -45,7 +47,7 @@ k=1.25/threshold=35 instead of joining `player_tiers` directly. (The
 grid-search scripts legitimately need raw CTEs since they parameterize
 k/threshold — those are fine as-is, not part of this patch.)
 
-## 4. Add a deployment-tracking registry
+## 4. Add a deployment-tracking registry - DONE 8/17/26
 
 Process gap, not a code bug — nothing currently tracks which `.sql`
 files have actually been applied to the live DB vs. just existing in
@@ -54,7 +56,7 @@ the repo. Caused real time loss this session (`player_tiers.sql`,
 Candidate: a `schema_migrations` table, or a plain `DEPLOYED.md`
 checklist.
 
-## 5. Subfolder `scripts/` one level deep (lower priority, organizational only)
+## 5. Subfolder `scripts/` one level deep (lower priority, organizational only) - DONE 8/17/26
 
 `scripts/` has grown to 40+ flat files. Proposed split — see git
 commands below. Reuses the exact import pattern `scripts/analysis/`
