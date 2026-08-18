@@ -28,7 +28,7 @@ QUERY = """
            tvo.opp_def_rating, tvo.opp_pace,
            gfsw.fantasy_score
     FROM team_vs_opponent_trailing10 tvo
-    JOIN game_fantasy_scores_weekly_lock_signal gfsw
+    JOIN game_fantasy_scores_weekly_percentage_to_lock gfsw
         ON gfsw.team_id = tvo.team_id
         AND gfsw.season_id = tvo.season_id
         AND gfsw.game_date = tvo.game_date

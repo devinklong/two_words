@@ -6,7 +6,7 @@ Every roadmap-step-5 hypothesis so far was tested against percentage_to_lock
 (team-level output, not player-level production) -- never fantasy_score
 directly. This closes that gap: tests own pace/off/def rating and opponent
 pace/off/def rating against fantasy_score in one pass, using
-team_vs_opponent_trailing10 joined to game_fantasy_scores_weekly_lock_signal
+team_vs_opponent_trailing10 joined to game_fantasy_scores_weekly_percentage_to_lock
 on team_id+season_id+game_date. Read-only.
 """
 
@@ -30,7 +30,7 @@ QUERY = """
            tvo.opp_pace, tvo.opp_off_rating, tvo.opp_def_rating,
            gfsw.fantasy_score
     FROM team_vs_opponent_trailing10 tvo
-    JOIN game_fantasy_scores_weekly_lock_signal gfsw
+    JOIN game_fantasy_scores_weekly_percentage_to_lock gfsw
         ON gfsw.team_id = tvo.team_id
         AND gfsw.season_id = tvo.season_id
         AND gfsw.game_date = tvo.game_date

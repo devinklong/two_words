@@ -26,7 +26,7 @@ WINDOWS = {
 QUERY_TEMPLATE = """
     SELECT tvo.own_games_included, tvo.opp_def_rating, gfsw.percentage_to_lock
     FROM {view} tvo
-    JOIN game_fantasy_scores_weekly_lock_signal gfsw
+    JOIN game_fantasy_scores_weekly_percentage_to_lock gfsw
         ON gfsw.team_id = tvo.team_id
         AND gfsw.season_id = tvo.season_id
         AND gfsw.game_date = tvo.game_date

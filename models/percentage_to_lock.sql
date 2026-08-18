@@ -18,7 +18,7 @@ CREATE TABLE hold_value_curve_params_by_tier (
 
 -- CREATE OR REPLACE can't change a function's parameter types (would
 -- overload instead), so the old BIGINT version is dropped explicitly.
--- CASCADE: game_fantasy_scores_weekly_lock_signal (below) and
+-- CASCADE: game_fantasy_scores_weekly_percentage_to_lock (below) and
 -- game_lock_signal.sql both transitively depend on this function -- without
 -- CASCADE the drop fails outright whenever either exists, which then makes
 -- every statement below silently run against the STALE pre-edit objects.
@@ -48,9 +48,9 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- CASCADE here for the same reason as above -- game_lock_signal depends on this view.
-DROP VIEW IF EXISTS game_fantasy_scores_weekly_lock_signal CASCADE;
+DROP VIEW IF EXISTS game_fantasy_scores_weekly_percentage_to_lock CASCADE;
 
-CREATE VIEW game_fantasy_scores_weekly_lock_signal AS
+CREATE VIEW game_fantasy_scores_weekly_percentage_to_lock AS
 SELECT
     gfsw.*,
     pt.tier,
@@ -68,11 +68,11 @@ JOIN player_tiers pt
 -- Verification
 -- =========================
 
-SELECT COUNT(*) FROM game_fantasy_scores_weekly_lock_signal;
+SELECT COUNT(*) FROM game_fantasy_scores_weekly_percentage_to_lock;
 
 -- Last game of the week must always show 100% (no future chance left)
 SELECT COUNT(*) AS violations
-FROM game_fantasy_scores_weekly_lock_signal
+FROM game_fantasy_scores_weekly_percentage_to_lock
 WHERE is_last_game_of_week AND percentage_to_lock != 1.0000;
 
 -- Should closely match the real hold-win rates (see fit script's own printed table)
@@ -80,7 +80,7 @@ SELECT
     tier, games_remaining_in_week,
     COUNT(*) AS decision_points,
     ROUND(100 * (1 - AVG(percentage_to_lock)), 1) AS implied_hold_wins_pct_from_curve
-FROM game_fantasy_scores_weekly_lock_signal
+FROM game_fantasy_scores_weekly_percentage_to_lock
 WHERE games_remaining_in_week BETWEEN 1 AND 4
 GROUP BY tier, games_remaining_in_week
 ORDER BY tier, games_remaining_in_week;
@@ -88,7 +88,7 @@ ORDER BY tier, games_remaining_in_week;
 -- Spot check Jokić's week 5, 2024-25
 SELECT p.full_name, gfsw.game_date, gfsw.games_remaining_in_week, gfsw.tier,
        gfsw.fantasy_score, gfsw.percentage_to_lock
-FROM game_fantasy_scores_weekly_lock_signal gfsw
+FROM game_fantasy_scores_weekly_percentage_to_lock gfsw
 JOIN players p ON p.player_id = gfsw.player_id
 WHERE p.full_name ILIKE '%joki%' AND gfsw.season_id = '22024' AND gfsw.week_number = 5
 ORDER BY gfsw.game_date;

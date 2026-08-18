@@ -22,7 +22,7 @@ QUERY = """
         gfsw.games_remaining_in_week,
         gl.is_home,
         gfsw.fantasy_score
-    FROM game_fantasy_scores_weekly_lock_signal gfsw
+    FROM game_fantasy_scores_weekly_percentage_to_lock gfsw
     JOIN game_logs gl
         ON gl.player_id = gfsw.player_id
         AND gl.season_id = gfsw.season_id

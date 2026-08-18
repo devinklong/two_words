@@ -28,7 +28,7 @@ QUERY = """
         END AS schedule_situation,
         gfsw.fantasy_score,
         gfsw.percentage_to_lock
-    FROM game_fantasy_scores_weekly_lock_signal gfsw
+    FROM game_fantasy_scores_weekly_percentage_to_lock gfsw
     JOIN team_schedule_b2b_flags b2b
         ON b2b.team_id = gfsw.team_id
         AND b2b.season_id = gfsw.season_id

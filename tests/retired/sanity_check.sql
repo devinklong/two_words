@@ -57,7 +57,7 @@ SELECT
     ) AS curve_summary  -- e.g. "1:41.6%, 2:59.2%, 3:66.7%, 4:69.9%"
 FROM (
     SELECT variance_bucket, games_remaining_in_week, AVG(percentage_to_lock) AS avg_lock
-    FROM game_fantasy_scores_weekly_lock_signal
+    FROM game_fantasy_scores_weekly_percentage_to_lock
     WHERE games_remaining_in_week >= 1
     GROUP BY variance_bucket, games_remaining_in_week
 ) sub

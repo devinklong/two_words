@@ -35,7 +35,7 @@ SELECT
         WHEN gfswls.games_remaining_in_week = 0 THEN 'PASS'
         ELSE 'HOLD'
     END AS lock_signal
-FROM game_fantasy_scores_weekly_lock_signal gfswls
+FROM game_fantasy_scores_weekly_percentage_to_lock gfswls
 JOIN ownable_player_pool opp
     ON opp.player_id = gfswls.player_id AND opp.season_id = gfswls.season_id
 JOIN player_season_fantasy_stats pss
@@ -44,6 +44,8 @@ LEFT JOIN player_injury_return_flags pirf
     ON pirf.player_id = gfswls.player_id
     AND pirf.team_id = gfswls.team_id
     AND pirf.game_date = gfswls.game_date;
+
+
 
 -- =========================
 -- Verification

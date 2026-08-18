@@ -54,7 +54,7 @@ WITH base AS (
         pss.avg_fantasy_score AS player_avg,
         pss.stddev_fantasy_score AS player_std,
         COALESCE(pirf.is_return_game, FALSE) AS is_return_game
-    FROM game_fantasy_scores_weekly_lock_signal gfswls
+    FROM game_fantasy_scores_weekly_percentage_to_lock gfswls
     JOIN ownable_player_pool opp
         ON opp.player_id = gfswls.player_id AND opp.season_id = gfswls.season_id
     JOIN player_season_fantasy_stats pss
@@ -119,7 +119,7 @@ WITH base AS (
     SELECT
         gfswls.player_id, gfswls.season_id, gfswls.week_number, gfswls.game_date,
         gfswls.fantasy_score, gfswls.games_remaining_in_week
-    FROM game_fantasy_scores_weekly_lock_signal gfswls
+    FROM game_fantasy_scores_weekly_percentage_to_lock gfswls
     JOIN ownable_player_pool opp
         ON opp.player_id = gfswls.player_id AND opp.season_id = gfswls.season_id
 ),

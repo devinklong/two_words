@@ -24,7 +24,7 @@ BUCKET_TARGET = "percentage_to_lock"  # the real decision output
 TARGET_QUERY = """
     SELECT tvo.own_games_included, tvo.{bucket_var}, gfsw.{bucket_target}
     FROM team_vs_opponent_trailing10 tvo
-    JOIN game_fantasy_scores_weekly_lock_signal gfsw
+    JOIN game_fantasy_scores_weekly_percentage_to_lock gfsw
         ON gfsw.team_id = tvo.team_id
         AND gfsw.season_id = tvo.season_id
         AND gfsw.game_date = tvo.game_date

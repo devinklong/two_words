@@ -3,7 +3,7 @@
 -- rebuild -- increasingly wasteful as the season grows, since only a
 -- handful of rows are ever actually new) into a real TABLE, kept current
 -- by sync_game_fantasy_scores_weekly_effective.sql's incremental catch-up
--- instead. Downstream objects (game_fantasy_scores_weekly_lock_signal,
+-- instead. Downstream objects (game_fantasy_scores_weekly_percentage_to_lock,
 -- game_lock_signal, etc.) all just SELECT FROM this name -- SQL can't
 -- tell a table from a materialized view, so nothing downstream needs to
 -- change. Run this ONCE.
@@ -15,7 +15,7 @@
 -- schedule itself changes (postponement, makeup game), not nightly.
 --
 -- REQUIRED IMMEDIATELY AFTER THIS FILE: the CASCADE below takes
--- game_fantasy_scores_weekly_lock_signal and game_lock_signal down with
+-- game_fantasy_scores_weekly_percentage_to_lock and game_lock_signal down with
 -- it. Rerun percentage_to_lock.sql then game_lock_signal.sql to rebuild
 -- both before trusting the schema again.
 
