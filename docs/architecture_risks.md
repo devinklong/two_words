@@ -15,7 +15,9 @@ and a docstring stat-line typo in the same file (Jokić ground-truth
 example had the wrong oreb/dreb split; the real backfilled data was
 always correct).
 
-**Status: 4 of 5 items DONE. Lower-severity list below still open.**
+**Status: 4 of 8 items DONE.** Items 6-8 promoted from the old
+"lower-severity" list on 8/19/26 — same content, now tracked as real
+numbered items rather than an informal afterthought.
 
 ## 1. `lock_bar` formula duplication is a correctness risk, not style - DONE 8/16/26
 
@@ -113,23 +115,26 @@ it doesn't exist in the live DB, `historical_matchup_results` and
 Same item as `patch_list.md` #6a — listed here too since it's a
 structural gap, not just a missing test.
 
-## Lower-severity, worth knowing, not urgent
+## 6. No all-or-nothing transactions in most ingestion scripts
 
-- **No all-or-nothing transactions in most ingestion scripts.** Loops
-  in `backfill_sleeper_league.py` and similar files `commit()` after
-  each item rather than wrapping the whole run in one transaction. A
-  script interrupted mid-run leaves a plausible-looking but partially
-  synced DB state, with nothing flagging that the run didn't finish.
-- **Crosswalk is name-only, no collision handling.** Nothing in
-  `sleeper_player_crosswalk`'s matching logic accounts for two
-  different players sharing an identical normalized name, or a
-  player's registered name changing mid-career. Hasn't happened yet;
-  nothing structurally prevents it as the crosswalk grows across more
-  seasons and draft classes.
-- **Season/week-count constants scattered, not centralized.**
-  `MAX_WEEK = 24`, the `('22021','22022','22023')` train split, and the
-  `('22024','22025')` validate split are hardcoded as literal tuples
-  across several grid-search files rather than defined once. Same
-  duplication pattern as item #1 above, lower stakes since it only
-  matters if the league format itself changes (different playoff
-  structure, a 6th backfilled season).
+Loops in `backfill_sleeper_league.py` and similar files `commit()`
+after each item rather than wrapping the whole run in one transaction.
+A script interrupted mid-run leaves a plausible-looking but partially
+synced DB state, with nothing flagging that the run didn't finish.
+
+## 7. Crosswalk is name-only, no collision handling
+
+Nothing in `sleeper_player_crosswalk`'s matching logic accounts for two
+different players sharing an identical normalized name, or a player's
+registered name changing mid-career. Hasn't happened yet; nothing
+structurally prevents it as the crosswalk grows across more seasons and
+draft classes.
+
+## 8. Season/week-count constants scattered, not centralized
+
+`MAX_WEEK = 24`, the `('22021','22022','22023')` train split, and the
+`('22024','22025')` validate split are hardcoded as literal tuples
+across several grid-search files rather than defined once. Same
+duplication pattern as item #1 above, lower stakes since it only
+matters if the league format itself changes (different playoff
+structure, a 6th backfilled season).

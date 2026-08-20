@@ -7,6 +7,19 @@ automatically. Populates sleeper_leagues, sleeper_rosters, sleeper_users,
 sleeper_matchups (weeks 1-24), sleeper_transactions (rounds 1-24).
 No auth needed -- Sleeper's API is public read-only.
 
+ALL-OR-NOTHING (fixed 8/19/26, docs/architecture_risks.md #6): the
+whole run -- every season, every step -- is one transaction. A single
+commit() happens only after everything succeeds; any exception triggers
+a full rollback, leaving the DB exactly as it was before the run
+started. Previously each step (league/rosters/users/matchups/
+transactions) committed separately, so a run interrupted partway
+through left a real but incomplete state with nothing flagging that it
+hadn't finished. Trade-off worth knowing: this holds one DB transaction
+open for the full run duration (multiple minutes, given REQUEST_DELAY
+across ~24 weeks x 2 seasons of API calls) -- fine for an infrequent
+backfill script; a high-frequency or very long-running job would want
+checkpointing instead of one giant transaction.
+
 Usage: python scripts/backfill_sleeper_league.py
 """
 
@@ -167,37 +180,44 @@ def run():
     conn = get_connection()
     cur = conn.cursor()
 
-    print(f"Following season chain from league_id={CURRENT_LEAGUE_ID}...")
-    chain = get_season_chain(CURRENT_LEAGUE_ID)
-    print(f"Found {len(chain)} season(s): {[(l['season'], l['league_id']) for l in chain]}")
+    try:
+        print(f"Following season chain from league_id={CURRENT_LEAGUE_ID}...")
+        chain = get_season_chain(CURRENT_LEAGUE_ID)
+        print(f"Found {len(chain)} season(s): {[(l['season'], l['league_id']) for l in chain]}")
 
-    for league in chain:
-        league_id, season = league["league_id"], league.get("season")
-        print(f"\n--- Season {season} (league_id={league_id}) ---")
+        for league in chain:
+            league_id, season = league["league_id"], league.get("season")
+            print(f"\n--- Season {season} (league_id={league_id}) ---")
 
-        upsert_league(cur, league)
+            upsert_league(cur, league)
+            print("  league settings staged")
+
+            n_rosters = upsert_rosters(cur, league_id)
+            print(f"  {n_rosters} rosters staged")
+
+            n_users = upsert_users(cur, league_id)
+            print(f"  {n_users} users staged")
+
+            n_matchups = upsert_matchups(cur, league_id)
+            print(f"  {n_matchups} matchup rows staged")
+
+            n_transactions = upsert_transactions(cur, league_id)
+            print(f"  {n_transactions} transactions staged")
+
         conn.commit()
-        print("  league settings synced")
+        print("\nDone. All seasons committed in one all-or-nothing transaction.")
 
-        n_rosters = upsert_rosters(cur, league_id)
-        conn.commit()
-        print(f"  {n_rosters} rosters synced")
+    except Exception:
+        conn.rollback()
+        print("\nERROR: run failed partway through. ALL staged changes rolled "
+              "back -- the DB is exactly as it was before this run started. "
+              "Fix the underlying issue and rerun from scratch; there is no "
+              "partial state to clean up.")
+        raise
 
-        n_users = upsert_users(cur, league_id)
-        conn.commit()
-        print(f"  {n_users} users synced")
-
-        n_matchups = upsert_matchups(cur, league_id)
-        conn.commit()
-        print(f"  {n_matchups} matchup rows synced")
-
-        n_transactions = upsert_transactions(cur, league_id)
-        conn.commit()
-        print(f"  {n_transactions} transactions synced")
-
-    cur.close()
-    conn.close()
-    print("\nDone.")
+    finally:
+        cur.close()
+        conn.close()
 
 
 if __name__ == "__main__":
