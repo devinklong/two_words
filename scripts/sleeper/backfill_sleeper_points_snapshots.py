@@ -13,6 +13,15 @@ Does NOT touch the 2026-27 league -- no weeks have been played yet, so
 there's nothing to backfill there (see sleeper_daily_sync.py for the
 going-forward path once that season starts).
 
+ALL-OR-NOTHING (fixed 8/19/26, docs/architecture_risks.md #6, same fix
+as backfill_sleeper_league.py): both seasons are one transaction now.
+A single commit() happens only after both complete successfully; any
+exception rolls back everything, leaving the DB exactly as it was
+before the run started. Previously each season committed separately, so
+an interruption during the second season's processing left the first
+season's snapshots committed but the second season's absent, with
+nothing flagging that the run hadn't finished.
+
 Usage: python scripts/backfill_sleeper_points_snapshots.py
 """
 
@@ -34,15 +43,26 @@ def run():
     conn = get_connection()
     cur = conn.cursor()
 
-    for league_id, season in COMPLETED_LEAGUE_IDS:
-        print(f"\n--- Season {season} (league_id={league_id}) ---")
-        n_checked, n_inserted = sync_matchup_points_snapshot(cur, league_id, range(1, MAX_WEEK + 1))
-        conn.commit()
-        print(f"  {n_checked} roster/week points checked, {n_inserted} snapshot(s) recorded")
+    try:
+        for league_id, season in COMPLETED_LEAGUE_IDS:
+            print(f"\n--- Season {season} (league_id={league_id}) ---")
+            n_checked, n_inserted = sync_matchup_points_snapshot(cur, league_id, range(1, MAX_WEEK + 1))
+            print(f"  {n_checked} roster/week points checked, {n_inserted} snapshot(s) staged")
 
-    cur.close()
-    conn.close()
-    print("\nDone.")
+        conn.commit()
+        print("\nDone. Both seasons committed in one all-or-nothing transaction.")
+
+    except Exception:
+        conn.rollback()
+        print("\nERROR: run failed partway through. ALL staged changes rolled "
+              "back -- the DB is exactly as it was before this run started. "
+              "Fix the underlying issue and rerun from scratch; there is no "
+              "partial state to clean up.")
+        raise
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 if __name__ == "__main__":
