@@ -198,6 +198,8 @@ def run():
             n_users = upsert_users(cur, league_id)
             print(f"  {n_users} users staged")
 
+            n_transactions = upsert_transactions(cur, league_id)
+
             n_matchups = upsert_matchups(cur, league_id)
             print(f"  {n_matchups} matchup rows staged")
 

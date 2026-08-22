@@ -15,7 +15,7 @@ and a docstring stat-line typo in the same file (Jokić ground-truth
 example had the wrong oreb/dreb split; the real backfilled data was
 always correct).
 
-**Status: 4 of 8 items DONE.** Items 6-8 promoted from the old
+**Status: 5 of 8 items DONE.** Items 6-8 promoted from the old
 "lower-severity" list on 8/19/26 — same content, now tracked as real
 numbered items rather than an informal afterthought.
 
@@ -115,10 +115,23 @@ it doesn't exist in the live DB, `historical_matchup_results` and
 Same item as `patch_list.md` #6a — listed here too since it's a
 structural gap, not just a missing test.
 
-## 6. No all-or-nothing transactions in most ingestion scripts
+## 6. No all-or-nothing transactions in most ingestion scripts - DONE 8/20/26
+
+**Fix:** Fixed `backfill_sleeper_league.py` and
+`backfill_sleeper_points_snapshots.py` — each script's entire run (all
+seasons, every step) is now one transaction: a single `commit()` after
+everything succeeds, `rollback()` on any exception. Verified with a
+real forced-failure test on each, not just code review: injected a
+temporary exception partway through a live run (after real data was
+already staged — 240 matchup rows/10 rosters/10 users for one script,
+240 snapshot rows for the other), confirmed via `synced_at` timestamp
+queries that **zero rows persisted** despite the mid-run work, then
+removed the test and reran clean to confirm the happy path still
+completes normally end to end. Other ingestion scripts with the same
+per-step commit pattern (if any) are not yet audited.
 
 Loops in `backfill_sleeper_league.py` and similar files `commit()`
-after each item rather than wrapping the whole run in one transaction.
+after each step rather than wrapping the whole run in one transaction.
 A script interrupted mid-run leaves a plausible-looking but partially
 synced DB state, with nothing flagging that the run didn't finish.
 
