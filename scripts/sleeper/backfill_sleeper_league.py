@@ -20,6 +20,11 @@ across ~24 weeks x 2 seasons of API calls) -- fine for an infrequent
 backfill script; a high-frequency or very long-running job would want
 checkpointing instead of one giant transaction.
 
+FIXED 8/21/26: upsert_transactions(cur, league_id) was being called
+TWICE per season -- once before upsert_matchups (result discarded,
+never printed, pure wasted API round-trip) and again after. Removed
+the first, dead call.
+
 Usage: python scripts/backfill_sleeper_league.py
 """
 
@@ -197,8 +202,6 @@ def run():
 
             n_users = upsert_users(cur, league_id)
             print(f"  {n_users} users staged")
-
-            n_transactions = upsert_transactions(cur, league_id)
 
             n_matchups = upsert_matchups(cur, league_id)
             print(f"  {n_matchups} matchup rows staged")
