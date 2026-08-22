@@ -21,6 +21,10 @@ instability found in sleeper_matchups that drove the whole Step 6
 investigation -- currently just assumed reliable, never verified
 (docs/patch_list.md #6b).
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): MAX_WEEK now
+imported from scripts/constants.py instead of redefined here -- no
+behavior change, same literal value as before.
+
 Usage: python scripts/verify_transactions_independently.py <league_id>
 """
 
@@ -31,9 +35,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from db_connection import get_connection
+from constants import MAX_WEEK
 
 BASE_URL = "https://api.sleeper.app/v1"
-MAX_WEEK = 24
 REQUEST_DELAY = 0.3
 
 # Fields checked for per-transaction mismatches. Excludes 'created'

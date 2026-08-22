@@ -23,15 +23,17 @@ re-parameterized here per candidate penalty, since game_lock_signal.sql
 is a VIEW with the penalty hardcoded at 1.5 -- can't grid-search a fixed
 view, so the CASE logic is recomputed inline per candidate instead.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): TRAIN_SEASONS and
+VALIDATE_SEASONS now imported from scripts/constants.py instead of
+redefined here -- no behavior change, same literal values as before.
+
 Run as: python scripts/grid_search_injury_penalty.py
 """
 
 from db_connection import get_connection
+from constants import TRAIN_SEASONS, VALIDATE_SEASONS
 
 CANDIDATE_PENALTIES = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
-
-TRAIN_SEASONS = ('22021', '22022', '22023')
-VALIDATE_SEASONS = ('22024', '22025')
 
 # Policy banked score for a given candidate penalty, split train/validate.
 # ABSOLUTE_FLOOR (35) and CEILING_MULTIPLIER (0.5) held fixed -- already

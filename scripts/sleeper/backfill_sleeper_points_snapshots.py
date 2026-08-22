@@ -1,5 +1,5 @@
 """
-scripts/backfill_sleeper_points_snapshots.py
+scripts/sleeper/backfill_sleeper_points_snapshots.py
 
 One-time backfill of sleeper_matchup_points_snapshots for both completed
 seasons (2024, 2025), all 24 weeks each. Reuses
@@ -22,6 +22,10 @@ an interruption during the second season's processing left the first
 season's snapshots committed but the second season's absent, with
 nothing flagging that the run hadn't finished.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): MAX_WEEK now
+imported from scripts/constants.py instead of redefined here -- no
+behavior change, same literal value as before.
+
 Usage: python scripts/backfill_sleeper_points_snapshots.py
 """
 
@@ -31,12 +35,12 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from db_connection import get_connection
 from sleeper_daily_sync import sync_matchup_points_snapshot
+from constants import MAX_WEEK
 
 COMPLETED_LEAGUE_IDS = [
     ("1113487058661744640", "2024"),
     ("1214984705477185536", "2025"),
 ]
-MAX_WEEK = 24  # same as backfill_sleeper_league.py -- 21 regular + 3 playoff
 
 
 def run():

@@ -1,5 +1,5 @@
 """
-scripts/backfill_sleeper_league.py
+scripts/sleeper/backfill_sleeper_league.py
 
 Backfills both Sleeper seasons (2024, 2025) starting from the current
 league_id, following previous_league_id to find the prior season
@@ -25,6 +25,10 @@ TWICE per season -- once before upsert_matchups (result discarded,
 never printed, pure wasted API round-trip) and again after. Removed
 the first, dead call.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): MAX_WEEK now
+imported from scripts/constants.py instead of redefined here -- no
+behavior change, same literal value as before.
+
 Usage: python scripts/backfill_sleeper_league.py
 """
 
@@ -35,12 +39,12 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from db_connection import get_connection
+from constants import MAX_WEEK
 
 import requests
 
 BASE_URL = "https://api.sleeper.app/v1"
 CURRENT_LEAGUE_ID = "1347268546727514112"
-MAX_WEEK = 24  # 21 regular season weeks + 3 playoff weeks, this league's actual schedule
 REQUEST_DELAY = 0.3  # be a reasonable citizen of a free public API
 
 

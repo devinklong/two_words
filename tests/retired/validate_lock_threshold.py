@@ -11,6 +11,10 @@ alone, THEN check it once. Auto-validating inside the search would let
 the "best" combo get picked partly based on validation performance,
 defeating the purpose.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): VALIDATE_SEASONS and
+REPLACEMENT_LEVEL now imported from scripts/constants.py instead of
+redefined here -- no behavior change, same literal values as before.
+
 Run from the project root:
     python scripts/validate_lock_threshold.py K THRESHOLD
 
@@ -23,9 +27,7 @@ import sys
 import pandas as pd
 
 from db_connection import get_connection
-
-VALIDATE_SEASONS = ('22024', '22025')
-REPLACEMENT_LEVEL = 30  # see methodology_notes.md's replacement-level assumption note
+from constants import VALIDATE_SEASONS, REPLACEMENT_LEVEL
 
 SIMULATION_QUERY = """
 WITH pool AS (

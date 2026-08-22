@@ -13,6 +13,24 @@ produces a complete, systematic map of exactly which (week, roster_id)
 pairs currently disagree between a fresh pull and stored data, across
 every week of the season -- something only spot-checked so far.
 
+A mismatch here reflects the documented Sleeper matchup-points API
+instability (Step 6), not necessarily a stored-data error -- stored
+data (sleeper_matchup_points_snapshots) has already been hand-verified
+against the app's real Schedule screens. Treat this script's output as
+informational, not as evidence something needs fixing in the DB.
+
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): MAX_WEEK now
+imported from scripts/constants.py instead of redefined here -- no
+behavior change, same literal value as before.
+
+FIXED 8/22/26: the comparison used to check `fresh_points ==
+stored_points` directly -- but stored_points comes back from Postgres
+as a Decimal and fresh_points is a JSON-sourced Python float, and
+those don't compare equal even for identical values
+(Decimal('393.3') == 393.3 is False due to float binary imprecision).
+This was producing large numbers of false-positive mismatches. Now
+both sides are rounded to 2 decimals as float before comparing.
+
 Usage: python scripts/verify_matchup_points_independently.py <league_id>
 """
 
@@ -23,10 +41,19 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent))
 from db_connection import get_connection
+from constants import MAX_WEEK
 
 BASE_URL = "https://api.sleeper.app/v1"
-MAX_WEEK = 24
 REQUEST_DELAY = 0.3
+
+
+def close_enough(a, b, tol=0.01):
+    """Round-then-compare, avoiding the Decimal-vs-float false-mismatch
+    bug the old version of this script had (Decimal('393.3') == 393.3
+    is False due to float binary imprecision)."""
+    if a is None or b is None:
+        return a == b
+    return abs(round(float(a), 2) - round(float(b), 2)) < tol
 
 
 def fetch_week(league_id, week):
@@ -77,7 +104,7 @@ def run(league_id):
                 print(f"  [NO STORED VALUE] week={week} roster_id={roster_id} fresh={fresh_points}")
                 continue
 
-            if fresh_points == stored_points:
+            if close_enough(fresh_points, stored_points):
                 matches += 1
             else:
                 mismatches.append((week, roster_id, stored_points, fresh_points))

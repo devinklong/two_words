@@ -10,6 +10,10 @@ still explicit CLI args here since validating one specific candidate is
 the whole point. DEPLOY ORDER: lock_bar_function.sql must exist before
 running this.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): VALIDATE_SEASONS and
+REPLACEMENT_LEVEL now imported from scripts/constants.py instead of
+redefined here -- no behavior change, same literal values as before.
+
 Run: python scripts/validate_lock_decision.py FLOOR CEILING_MULTIPLIER
 Example: python scripts/validate_lock_decision.py 35 0.5
 """
@@ -19,11 +23,10 @@ import sys
 import pandas as pd
 
 from db_connection import get_connection
+from constants import VALIDATE_SEASONS, REPLACEMENT_LEVEL
 
 K_POOL = 1.25
 T_POOL = 35
-VALIDATE_SEASONS = ('22024', '22025')
-REPLACEMENT_LEVEL = 30
 
 SIMULATION_QUERY = """
 WITH pool AS (

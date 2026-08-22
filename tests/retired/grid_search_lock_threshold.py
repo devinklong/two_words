@@ -21,6 +21,10 @@ hand with the season_id filter changed to ('22024','22025') to check the
 winner holds up out-of-sample -- do NOT let this script auto-validate,
 that would defeat the point of a held-out split.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): TRAIN_SEASONS and
+REPLACEMENT_LEVEL now imported from scripts/constants.py instead of
+redefined here -- no behavior change, same literal values as before.
+
 Run from the project root:
     python scripts/grid_search_lock_threshold.py
 """
@@ -30,11 +34,10 @@ import itertools
 import pandas as pd
 
 from db_connection import get_connection
+from constants import TRAIN_SEASONS, REPLACEMENT_LEVEL
 
 K_VALUES = [0.75, 1.0, 1.25]
 THRESHOLD_VALUES = [30, 32, 35, 38, 40, 41, 42, 43, 44, 45, 48, 50]
-
-TRAIN_SEASONS = ('22021', '22022', '22023')
 
 # Pool-size guardrail (8/9/26): edge over naive climbs monotonically with
 # threshold with no cap, since a tiny pool of only elite players trivially
@@ -47,11 +50,6 @@ TRAIN_SEASONS = ('22021', '22022', '22023')
 # "just lock the top 20 superstars" territory and call that a win.
 POOL_SIZE_MIN = 140
 POOL_SIZE_MAX = 220
-
-# Replacement-level assumption for PASS -- see methodology_notes.md
-# "Replacement-Level Assumption for PASS (8/9/26)" for why this is a
-# fixed constant, not a derived value.
-REPLACEMENT_LEVEL = 30
 
 SIMULATION_QUERY = """
 WITH pool AS (

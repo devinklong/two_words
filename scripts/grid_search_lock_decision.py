@@ -12,6 +12,10 @@ whole purpose is testing different values of them -- lock_bar()'s
 defaults (35, 0.5) aren't used here on purpose. DEPLOY ORDER:
 lock_bar_function.sql must exist before running this.
 
+CENTRALIZED 8/22/26 (docs/architecture_risks.md #8): TRAIN_SEASONS and
+REPLACEMENT_LEVEL now imported from scripts/constants.py instead of
+redefined here -- no behavior change, same literal values as before.
+
 Run: python scripts/grid_search_lock_decision.py
 """
 
@@ -20,15 +24,13 @@ import itertools
 import pandas as pd
 
 from db_connection import get_connection
+from constants import TRAIN_SEASONS, REPLACEMENT_LEVEL
 
 K_POOL = 1.25
 T_POOL = 35
 
 ABSOLUTE_FLOOR_VALUES = [30, 32, 35, 38, 40]
 CEILING_MULTIPLIER_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]  # 0.0 = old flat-threshold behavior, kept as a sanity anchor
-
-TRAIN_SEASONS = ('22021', '22022', '22023')
-REPLACEMENT_LEVEL = 30  # see methodology_notes.md's replacement-level assumption note
 
 SIMULATION_QUERY = """
 WITH pool AS (
