@@ -30,15 +30,38 @@ views.sql's Step 1) is UNCHANGED and still needs a manual rebuild if the
 schedule itself changes (postponement, makeup game) -- that's rare enough
 not to chain in here.
 
-Run: python scripts/load_daily_game_logs.py [YYYY-MM-DD]
-     (defaults to yesterday if no date given)
+DATE RANGE SUPPORT (added 8/21/26): a single day was the only unit this
+could process -- no way to catch up several missing days at once (e.g.
+forking this project mid-season, or coming back after time away).
+run_for_date() now holds the actual per-day work, called once per day in
+the requested range. The effective-table sync stays a single call AFTER
+the whole range completes, not once per day -- it already catches up ANY
+missing row regardless of date (per its own docstring), so calling it
+mid-loop would just be redundant work N times instead of once. Endpoints
+themselves were already date-scoped, not year-specific -- this only adds
+the ability to loop over more than one date per invocation.
+
+FIXED 8/21/26: sys.path.append() was placed AFTER the local module
+imports that depend on it (data_cleaning_boxscore, get_scoreboard_games,
+etc., all of which live one level up in flat scripts/, not alongside
+this file in scripts/ingestion/) -- Python runs top to bottom, so those
+imports were failing with ModuleNotFoundError before the path fix ever
+ran. Moved to the top, right after importing sys/Path, before any local
+import.
+
+Run:
+    python scripts/load_daily_game_logs.py                        (yesterday only, unchanged default)
+    python scripts/load_daily_game_logs.py YYYY-MM-DD              (single day, unchanged)
+    python scripts/load_daily_game_logs.py YYYY-MM-DD YYYY-MM-DD   (inclusive range, new)
 """
 
 import sys
 from datetime import date, timedelta
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from nba_api.stats.endpoints import boxscoretraditionalv3
-from pathlib import Path
 from data_cleaning_boxscore import clean_boxscore
 from get_scoreboard_games import get_completed_games_with_home_away
 from build_gap_reasons import build_gap_reasons
@@ -46,7 +69,6 @@ from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_w
 from load_game_logs import load_game_logs, GAME_LOGS_COLUMNS
 from db_connection import get_connection
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 def season_for_date(d: date) -> str:
     """'2026-02-14' -> '22025'. Same Oct-cutoff heuristic as
@@ -55,11 +77,18 @@ def season_for_date(d: date) -> str:
     return f"2{start_year}"  # matches this project's season_id format, e.g. '22024'
 
 
-def main():
-    target_date = (
-        date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1
-        else date.today() - timedelta(days=1)
-    )
+def daterange(start_date: date, end_date: date):
+    """Inclusive date range, start_date..end_date -- yields one date() per day."""
+    for n in range((end_date - start_date).days + 1):
+        yield start_date + timedelta(days=n)
+
+
+def run_for_date(target_date: date) -> int:
+    """All the per-day work: find that night's games, load box scores
+    (with per-game rollback so one bad insert can't poison the rest of
+    the night -- see the try/except below), and annotate that date's
+    gaps. Returns total rows inserted for this date. The effective-table
+    sync is NOT called here -- see module docstring for why."""
     season_id = season_for_date(target_date)
 
     print(f"Finding games for {target_date.isoformat()}...")
@@ -96,13 +125,13 @@ def main():
 
     conn.close()
 
-    print(f"\nDone. Inserted {total_inserted} total rows for {target_date.isoformat()}.")
+    print(f"Inserted {total_inserted} row(s) for {target_date.isoformat()}.")
     if failures:
-        print(f"\n{len(failures)} game(s) failed:")
+        print(f"{len(failures)} game(s) failed:")
         for gid, err in failures:
             print(f"  - {gid}: {err}")
 
-    print(f"\nAnnotating any new gaps from {target_date.isoformat()} with injury reasons...")
+    print(f"Annotating any new gaps from {target_date.isoformat()} with injury reasons...")
     gap_conn = get_connection()
     try:
         # date_to = date_from: scopes to EXACTLY this one day, not an
@@ -113,8 +142,35 @@ def main():
     finally:
         gap_conn.close()
 
-    print("\nSyncing game_fantasy_scores_weekly_effective (catches up ANY missing")
-    print("rows, not just tonight's -- see file docstring)...")
+    return total_inserted
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 2:
+        start_date = date.fromisoformat(args[0])
+        end_date = date.fromisoformat(args[1])
+    elif len(args) == 1:
+        start_date = end_date = date.fromisoformat(args[0])
+    else:
+        start_date = end_date = date.today() - timedelta(days=1)
+
+    if start_date > end_date:
+        raise ValueError(f"start date {start_date} is after end date {end_date}")
+
+    grand_total = 0
+    for target_date in daterange(start_date, end_date):
+        print(f"\n{'=' * 60}")
+        print(f"Processing {target_date.isoformat()}")
+        print(f"{'=' * 60}")
+        grand_total += run_for_date(target_date)
+
+    print(f"\n{'=' * 60}")
+    print(f"Done. {grand_total} total row(s) inserted across "
+          f"{(end_date - start_date).days + 1} day(s).")
+
+    print("\nSyncing game_fantasy_scores_weekly_effective once for the whole run")
+    print("(catches up ANY missing rows, not just this range -- see file docstring)...")
     sync_conn = get_connection()
     try:
         n_synced = sync_game_fantasy_scores_weekly_effective(sync_conn)

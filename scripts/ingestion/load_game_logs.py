@@ -4,22 +4,43 @@ get_active_players() -- that only reflects TODAY's roster, wrong for any
 past season), pulls PlayerGameLog, cleans it, and bulk-inserts. Run from
 project root: python scripts/load_game_logs.py [SEASON]. Prereqs: game_logs.sql
 run, players table populated (load_players.py pulls the full historical list).
+
+FIXED 8/21/26: load_game_logs() was returning len(rows) -- the count of
+rows ATTEMPTED, not the count Postgres actually inserted. Since the
+INSERT uses ON CONFLICT (game_id, player_id) DO NOTHING, any row that
+already existed was silently skipped, but the function reported the
+full attempted count regardless -- so "N rows" in every caller's output
+(this file's own main(), and load_daily_game_logs.py) never actually
+proved anything was new. Found while testing load_daily_game_logs.py
+against dates that may have already been loaded: the printed insert
+counts couldn't be trusted to answer whether the data was really new.
+Now uses cur.rowcount after the INSERT, which correctly reflects only
+the rows Postgres actually wrote, not rows skipped by the conflict
+clause.
+
+ALSO FIXED 8/21/26: sys.path.append() was placed AFTER the local import
+that depends on it (data_cleaning_nba_api, which lives one level up in
+flat scripts/) -- same ordering bug already found and fixed the same
+night in load_daily_game_logs.py and load_daily_team_schedule.py, missed
+here on the first pass. Surfaced via backfill_single_player.py, which
+imports from this file and hit the same ModuleNotFoundError. Moved to
+the top, right after importing sys/Path, before any local import.
 """
 
 import sys
 import time
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 from psycopg2.extras import execute_values
-from pathlib import Path
 
 from nba_api.stats.static import teams as nba_teams
 from nba_api.stats.endpoints import playergamelog, commonteamroster
 
 from data_cleaning_nba_api import clean_gamelog
 from db_connection import get_connection
-
-sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 GAME_LOGS_COLUMNS = [
     "game_id", "player_id", "team_id", "opponent_team_id", "season_id",
@@ -100,9 +121,10 @@ def load_game_logs(df: pd.DataFrame, conn) -> int:
         """,
         rows,
     )
+    n_inserted = cur.rowcount  # actual rows Postgres wrote -- excludes ON CONFLICT DO NOTHING skips
     conn.commit()
     cur.close()
-    return len(rows)
+    return n_inserted
 
 
 def main():
