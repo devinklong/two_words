@@ -12,6 +12,21 @@
 -- extra args reproduces exactly what used to be hardcoded inline.
 -- DEPLOY ORDER: lock_bar_function.sql, then this file.
 --
+-- SIMPLIFIED 8/22/26: dropped the separate join to
+-- player_season_fantasy_stats entirely -- ownable_player_pool already
+-- exposes avg_fantasy_score/stddev_fantasy_score directly (needed for
+-- its own eligibility_ceiling calculation), so this view never needed
+-- a second source for the same numbers. One join instead of two, and
+-- ownable_player_pool.sql is now the only file that needs to know
+-- about the season-bootstrap logic (see its header for the full
+-- rationale -- season-bound stats once a player has 20+ games this
+-- season, rolling last-20-games window otherwise). Because most
+-- players are on the 'season' source for most of the season, the
+-- LOCK/HOLD/PASS distribution should closely track the historical
+-- 52.7/24.2/23.0 baseline once the season is underway -- expect
+-- visible drift only early in a new season or for individual players
+-- on 'rolling' due to a recent trade/injury.
+--
 -- An injury-return lock_bar penalty was built and tested here (8/10/26)
 -- and REJECTED after a targeted backtest showed it was wrong more often
 -- than right on the exact decisions it changed (see
@@ -25,12 +40,13 @@ DROP VIEW IF EXISTS game_lock_signal CASCADE;
 CREATE VIEW game_lock_signal AS
 SELECT
     gfswls.*,
-    pss.avg_fantasy_score AS player_avg_fantasy_score,
-    pss.stddev_fantasy_score AS player_stddev_fantasy_score,
+    opp.avg_fantasy_score AS player_avg_fantasy_score,
+    opp.stddev_fantasy_score AS player_stddev_fantasy_score,
+    opp.stats_source AS player_stats_source,
     COALESCE(pirf.is_return_game, FALSE) AS is_return_game,
-    lock_bar(pss.avg_fantasy_score, pss.stddev_fantasy_score) AS lock_bar,
+    lock_bar(opp.avg_fantasy_score, opp.stddev_fantasy_score) AS lock_bar,
     CASE
-        WHEN gfswls.fantasy_score >= lock_bar(pss.avg_fantasy_score, pss.stddev_fantasy_score)
+        WHEN gfswls.fantasy_score >= lock_bar(opp.avg_fantasy_score, opp.stddev_fantasy_score)
             THEN 'LOCK'
         WHEN gfswls.games_remaining_in_week = 0 THEN 'PASS'
         ELSE 'HOLD'
@@ -38,14 +54,10 @@ SELECT
 FROM game_fantasy_scores_weekly_percentage_to_lock gfswls
 JOIN ownable_player_pool opp
     ON opp.player_id = gfswls.player_id AND opp.season_id = gfswls.season_id
-JOIN player_season_fantasy_stats pss
-    ON pss.player_id = gfswls.player_id AND pss.season_id = gfswls.season_id
 LEFT JOIN player_injury_return_flags pirf
     ON pirf.player_id = gfswls.player_id
     AND pirf.team_id = gfswls.team_id
     AND pirf.game_date = gfswls.game_date;
-
-
 
 -- =========================
 -- Verification
@@ -58,21 +70,17 @@ SELECT COUNT(*) AS violations
 FROM game_lock_signal
 WHERE lock_signal = 'LOCK' AND fantasy_score < lock_bar;
 
--- Expect HOLD 52.7% / LOCK 24.2% / PASS 23.0% -- SAME as before
--- centralizing (formula unchanged, just relocated) -- if this drifts
--- from those numbers, the centralization introduced a real bug, not
--- just a refactor.
+-- Distribution -- should closely track 52.7/24.2/23.0 once most
+-- players are on the 'season' stats source (see header). Break out by
+-- source to see whether drift is coming from the still-small
+-- 'rolling' population specifically, rather than a real regression.
 SELECT lock_signal, COUNT(*) AS game_count,
        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
 FROM game_lock_signal
 GROUP BY lock_signal
 ORDER BY game_count DESC;
 
--- Spot check Jokić's week 5, 2024-25 -- lock_bar should sit at ~79.5,
--- UNCHANGED from before centralizing
-SELECT p.full_name, gfsw.game_date, gfsw.games_remaining_in_week,
-       gfsw.fantasy_score, gfsw.is_return_game, gfsw.lock_bar, gfsw.lock_signal
-FROM game_lock_signal gfsw
-JOIN players p ON p.player_id = gfsw.player_id
-WHERE p.full_name ILIKE '%joki%' AND gfsw.season_id = '22024' AND gfsw.week_number = 5
-ORDER BY gfsw.game_date;
+SELECT player_stats_source, lock_signal, COUNT(*) AS game_count
+FROM game_lock_signal
+GROUP BY player_stats_source, lock_signal
+ORDER BY player_stats_source, lock_signal;
