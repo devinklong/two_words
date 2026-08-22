@@ -15,9 +15,7 @@ and a docstring stat-line typo in the same file (Jokić ground-truth
 example had the wrong oreb/dreb split; the real backfilled data was
 always correct).
 
-**Status: 5 of 8 items DONE.** Items 6-8 promoted from the old
-"lower-severity" list on 8/19/26 — same content, now tracked as real
-numbered items rather than an informal afterthought.
+**Status: 6 of 8 items DONE.** Only #8 remains fully untouched.
 
 ## 1. `lock_bar` formula duplication is a correctness risk, not style - DONE 8/16/26
 
@@ -135,13 +133,26 @@ after each step rather than wrapping the whole run in one transaction.
 A script interrupted mid-run leaves a plausible-looking but partially
 synced DB state, with nothing flagging that the run didn't finish.
 
-## 7. Crosswalk is name-only, no collision handling
+## 7. Crosswalk is name-only, no collision handling - DONE 8/21/26 (tested, not currently a live risk)
+
+**Fix:** Built `scripts/sleeper/test_crosswalk_name_collisions.py`,
+reusing `normalize_name()` directly from
+`build_sleeper_player_crosswalk.py` (not reimplemented) so the test
+checks exactly what production matching would do — scoped to every
+player with `game_logs` data before season 2026-27, the existing pool
+the crosswalk actually draws from. Run live: **891 distinct players, 0
+collisions** on either exact or suffix-stripped normalization. Confirms
+no two players in the current dataset would be silently conflated.
+Structural collision-handling logic (a tiebreaker for if one is ever
+found — team, position, draft year) remains unbuilt, but is no longer
+urgent given the clean result.
 
 Nothing in `sleeper_player_crosswalk`'s matching logic accounts for two
 different players sharing an identical normalized name, or a player's
-registered name changing mid-career. Hasn't happened yet; nothing
-structurally prevents it as the crosswalk grows across more seasons and
-draft classes.
+registered name changing mid-career. As of 8/21/26 this has been tested
+directly against the live dataset and confirmed not to be occurring —
+kept open as a design gap (no handling exists if it ever does happen),
+not as an active bug.
 
 ## 8. Season/week-count constants scattered, not centralized
 
