@@ -90,6 +90,12 @@ correct" 2024-25 data. Both completed seasons now match the real app
 exactly on wins/losses/ties/PF/PA. Full comparison table:
 `docs/step6_verification_results.md`.
 
+**Note added 8/23/26:** that 8/15 audit, like this whole Step 6 process,
+was an AGGREGATE match (season-total wins/losses/PF/PA) — not a true
+per-row check of all 480 entries in either sheet. A real per-row audit
+was still outstanding at the time this section was originally written.
+See "v3.1" below for that work and what it found.
+
 **Steps 8/9 — DONE**, shipped independent of step 6 exactly as the
 8/14/26 design decision above anticipated:
 `scripts/opponent_scout.py` (opponent roster spike-threat ranking, via
@@ -113,12 +119,57 @@ non-obvious finding along the way: `free_agent`-type transactions are
 drop-only in this league's actual data (not pickups, despite the name)
 — `waiver` is the type that covers both adds and drops.
 
-**What's left is refinement, not new scope:** a 6-item
-consistency/refactor list (`docs/patch_list.md`) and a 5-item
-correctness-risk list (`docs/architecture_risks.md`) — centralizing the
-duplicated `lock_bar` formula is the highest-priority item on either.
-Two smaller open threads, neither blocking: the `player_scores` sheet
-(4,991 rows) was built but never wired into a table/upsert script the
-way `team_scores` was; FAAB (waiver budget) tracking is explicitly
-deferred, safely backfillable whenever wanted since Sleeper retains
-full historical transaction settings data.
+**What was left after v3.0 closed:** a 6-item consistency/refactor
+list (`docs/patch_list.md`) and (at the time) an 8-item correctness-risk
+list (`docs/architecture_risks.md`). Two smaller open threads: the
+`player_scores` sheet's own per-row accuracy had never actually been
+audited the way `team_scores` had (see below — resolved in v3.1); FAAB
+(waiver budget) tracking is still explicitly deferred, safely
+backfillable whenever wanted since Sleeper retains full historical
+transaction settings data.
+
+---
+
+## v3.1 — Full per-row verification, 3 real bugs found and fixed (complete 8/23/26)
+
+Ran the audit that the 8/15/26 Step 6 closure never actually did: a true
+row-by-row comparison of both `player_scores` and `team_scores` against
+`game_fantasy_scores`/the real app, not just an aggregate season-total
+match. Two new scripts built for this,
+`scripts/verify_player_scores_against_xlsx.py` and
+`scripts/verify_team_scores_against_xlsx.py`.
+
+**What it found and fixed:**
+- **15 `player_scores` transcription typos** in the xlsx's `sleeper_player_id`
+  column (digit transpositions and similar) — corrected directly in the
+  sheet.
+- **A real crosswalk bug affecting 4 players** (Jaren Jackson Jr., Jabari
+  Smith Jr., Kevin Porter Jr., Orlando Robinson) — `sleeper_player_crosswalk`
+  had each mapped to the wrong `nba_player_id`, a Jr./Sr. suffix-matching
+  gap in `build_sleeper_player_crosswalk.py` itself. Fixed at the source
+  (see `architecture_risks.md` #11) and corrected for these 4 rows
+  directly.
+- **23 `team_scores` rows where the DB had drifted stale** relative to
+  the real app for a completed season — not a data-entry error, mostly
+  resolved by a fresh re-sync, with the remainder hand-verified against
+  the app and corrected via `schema/fixes/team_scores_manual_fix.sql`.
+  See `architecture_risks.md` #10 for the full writeup.
+- **A previously-accepted scoring-formula gap actually closed**:
+  technical/flagrant foul penalties, see `methodology_notes.md`'s
+  formula section — this alone explained 168 of the discrepancies found
+  along the way.
+
+**Also surfaced, unrelated to any of the above but caught in the same
+session:** a real regression in `ownable_player_pool` (from the 8/22/26
+season-bootstrap fix) that had silently dropped every historical season
+from `game_lock_signal` — see `architecture_risks.md` #9.
+
+**Final state:** 0 mismatches on both `player_scores` (against
+`game_fantasy_scores`) and `team_scores` (against the real app), full
+`rebuild_lock_pipeline.py` run clean against an updated known-good
+baseline (LOCK/HOLD/PASS split and Jokić `lock_bar` both shifted
+slightly from the pre-fix numbers — expected, reflecting the corrected
+formula, not a regression).
+
+Genuinely nothing outstanding from this thread. FAAB tracking remains
+the one deliberately-deferred item from v3.0's original closure.

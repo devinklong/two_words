@@ -15,7 +15,7 @@ and a docstring stat-line typo in the same file (Jokić ground-truth
 example had the wrong oreb/dreb split; the real backfilled data was
 always correct).
 
-**Status: 8 of 8 items DONE.**
+**Status: 11 of 11 items DONE.**
 
 ## 1. `lock_bar` formula duplication is a correctness risk, not style - DONE 8/16/26
 
@@ -100,6 +100,14 @@ views silently stale. Same underlying gap as `patch_list.md` #4
 (deployment tracking), called out here specifically because the risk is
 architectural, not just "nice to track."
 
+**Update 8/23/26 — this same regression check earned its keep for real.**
+When item #9 below (`ownable_player_pool`) broke, `rebuild_lock_pipeline.py`'s
+final check caught it immediately and correctly: Jokić's `lock_bar` came
+back `None` instead of a number, and the split shifted. Exactly the
+"rebuild runs clean but produces silently wrong numbers" failure mode
+this check exists to catch — it worked on the first real bug it
+encountered.
+
 ## 5. `sleeper_matchup_points_latest` — existence unconfirmed - DONE 8/17/26
 
 **Fix:** Confirmed live via `\dv sleeper_matchup_points_latest` — the
@@ -153,6 +161,13 @@ registered name changing mid-career. As of 8/21/26 this has been tested
 directly against the live dataset and confirmed not to be occurring —
 kept open as a design gap (no handling exists if it ever does happen),
 not as an active bug.
+
+**Superseded 8/23/26 — see item #11.** The "0 collisions" result above
+was correct for *exact-name* collisions, but a real, different bug in
+the same matching logic (Jr./Sr. suffix handling) went undetected by
+this exact test and caused 4 real silent mismatches. The two bugs are
+related but distinct — this item's fix and #11's fix are both needed,
+not redundant.
 
 ## 8. Season/week-count constants scattered, not centralized - DONE 8/22/26
 
@@ -231,3 +246,87 @@ patch, not yet resolved:
   is genuinely missing from disk. Unresolved — may be a deliberately
   retired/renamed file (like `grid_search_lock_threshold.py` turned
   out to be) rather than truly lost, but not yet confirmed either way.
+
+## 9. `ownable_player_pool`'s season-bootstrap redesign silently dropped every historical season - DONE 8/23/26
+
+**Fix:** Historical seasons (`season_id != current_season_config`) now
+read `player_season_fantasy_stats` directly again, completely
+unaffected by any bootstrap logic — restored to exactly how this view
+worked before the bootstrap redesign. The rolling-window fallback is
+now correctly scoped to apply ONLY within the current live season, on
+top of the restored historical coverage, not instead of it.
+
+The 8/22/26 season-bootstrap fix (adding a rolling-last-20-games
+fallback so the pool isn't empty at the start of a new season) had a
+real bug: its `current_season_stats` CTE filtered to ONLY the live
+`current_season_config` season, and `rolling_stats` similarly only
+ever computed the live bootstrap window — meaning every OTHER season
+silently got ZERO rows in the view. This collapsed `game_lock_signal`
+(which joins `ownable_player_pool`) from ~122,573 rows down to ~9,509
+— roughly one season's worth of data total across the entire 5-season
+history. Caught by `rebuild_lock_pipeline.py`'s own regression check
+(item #4 above) — Jokić's `lock_bar` on a known date returned `None`
+instead of a number. Not caught by the original bootstrap fix's own
+verification, which only checked total pool size and the rolling/
+season ratio for the current season, never whether OTHER seasons still
+had any rows at all — a real gap in what "verified" meant for that
+change. New verification query added (`GROUP BY season_id`, checking
+every season has real rows) that would have caught this the first
+time.
+
+## 10. `sleeper_matchup_points_snapshots` can silently drift stale for a completed season - DONE 8/23/26 (fixed this instance, not proactively monitored)
+
+**Fix:** A full per-row comparison (`scripts/verify_team_scores_against_xlsx.py`,
+built 8/23/26) against the manually-verified `2024_2025_all_scores.xlsx`
+found 166/240 2025-26 rows mismatched — the stored DB value differed
+from the real, correct value. Root cause: Step 6's original
+verification (see `v3_roadmap_sleeper_integration.md`) was an
+AGGREGATE match only (season-total wins/losses/PF/PA) — never a true
+per-row audit of all 480 entries, so individual errors could exist
+while still balancing out at the season-total level. A fresh full-
+season re-sync (`sync_matchup_points_snapshot()`, called directly for
+all 24 weeks) self-corrected most of it (166 → 23), confirming most of
+the drift was simply stale data a fresh pull resolves cleanly for a
+completed season — not a data-entry error and not ongoing live-API
+instability. The remaining 23 (3 pre-existing anomalies + 20 in
+2025-26 weeks 21-22, week 21 100% mismatched across all 10 rosters)
+needed real hand-verification against the app; all confirmed and
+corrected via `schema/fixes/team_scores_manual_fix.sql`. Final state:
+**0 mismatches across both completed seasons.**
+
+This is a real, still-open structural risk, not fully closed by this
+one fix: `sleeper_matchup_points_snapshots` is append-only and change-
+detecting, but nothing currently re-syncs a completed season
+periodically or flags when its "latest" snapshot has silently gone
+stale relative to reality. The 2025-26 weeks-21-22 cluster is
+plausibly a fresh instance of the same never-fully-root-caused Sleeper
+live-API instability from Step 6 (6 tested theories, no confirmed
+cause) — recurring at the regular-season/playoff transition boundary
+specifically, not season-wide. No proactive monitoring exists for this
+happening again in a future season.
+
+## 11. `sleeper_player_crosswalk`'s exact-name matching mishandles Jr./Sr. suffixes - DONE 8/23/26
+
+**Fix:** `build_sleeper_player_crosswalk.py`'s suffix-stripped fallback
+tier (`resolve_suffix_stripped_match()`) now checks whether a candidate
+match's own `players` row carries a conflicting suffix before
+auto-accepting it, instead of blindly trusting any single candidate.
+Real conflicts route to a new `suffix_conflicts` print bucket for
+manual review instead of silently guessing. Confirmed fixed:
+0 suffix conflicts on rerun.
+
+Found via the same full player_scores audit as item #10: 4 sleeper_ids
+(Jaren Jackson Jr., Jabari Smith Jr., Kevin Porter Jr., Orlando
+Robinson) were silently mapped to the wrong `nba_player_id` — for 3 of
+the 4, `nba_api` has two candidate rows (an older non-suffixed
+namesake + the real Jr.) and exact-name matching grabbed the wrong
+one; Orlando Robinson only has one candidate row on file (missing his
+real-life "Jr." suffix), so there was no wrong row to grab, but the
+same underlying suffix-blindness meant no match was made at all. Same
+class of gap as item #7's collision-handling logic, but a genuinely
+different bug — #7's own collision test (891 players, 0 collisions)
+did not catch this, since these 4 aren't *exact*-name collisions, they
+only collide after suffix-stripping. Both fixes are needed; neither
+supersedes the other. All 4 crosswalk rows corrected via direct
+`UPDATE`, confirmed against `players` and reflected in the final
+player_scores verification (69 → 2 remaining "no games" rows).

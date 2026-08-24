@@ -12,6 +12,8 @@
 
 **v3.0 — Sleeper league integration (CLOSED 8/15/26).** Full Sleeper API integration: raw ingestion (leagues/rosters/users/matchups/transactions), player ID crosswalk (394 matched), scoring-settings-as-config, roster/ownership tracking, historical matchup standings, full relationship diagram, opponent threat scouting (`opponent_scout.py`), waiver-wire target finder (`waiver_wire_finder.py`). 2025-26 weeks 1-18 hit an unresolved Sleeper API data-reliability issue (root cause never confirmed after 6 tested theories) — resolved practically via manual re-entry, hand-verified against the app's real record; full writeup in `docs/step6_verification_results.md`. See `v3_roadmap_sleeper_integration.md` for the full step-by-step log.
 
+**v3.1 — Full per-row verification pass + 3 real bugs found and fixed (complete 8/23/26).** Closed the last known gap in the scoring formula: technical/flagrant foul penalties, previously an accepted omission (see formula section below, now updated), are now correctly applied — backfilled from `PlayByPlayV3`, every subtype hand-verified against real Sleeper scores or the NBA rulebook rather than assumed from label text. Also ran the first true per-row (not aggregate) audit of both `player_scores` and `team_scores` against the manually-verified xlsx from Step 6 — surfaced and fixed 15 xlsx transcription typos, a 4-player crosswalk suffix-matching bug (see `architecture_risks.md` #11), and 23 rows where `team_scores` had gone stale relative to the real app for a completed season (`architecture_risks.md` #10). Along the way, caught and fixed a real, unrelated regression in `ownable_player_pool` that had silently dropped every historical season from `game_lock_signal` (`architecture_risks.md` #9) — found by `rebuild_lock_pipeline.py`'s own regression check doing exactly what it was built to do. Final state: 0 mismatches on both `player_scores` and `team_scores`, full pipeline rebuild clean against an updated known-good baseline.
+
 ---
 
 ## Lock/Hold Decision Logic — Design History
@@ -20,13 +22,17 @@
 - **8/9/26:** Redesigned again — absolute bar alone let high-average stars auto-LOCK on ordinary games. Fixed to a fully self-relative ceiling requirement: `LOCK` if `fantasy_score >= GREATEST(35, player's own mean + 0.5*stddev)`. Below that: `PASS` if no games remain that week, else `HOLD`. This is the current, deployed logic (`models/game_lock_signal.sql`).
 - **8/10/26:** An injury-return penalty was added to this same formula, tested, and reverted after failing a targeted backtest. See v1.1 summary above; full writeup in `tests/injuries/`.
 
-## Fantasy Scoring Formula — Confirmed 8/3/26
+## Fantasy Scoring Formula — Confirmed 8/3/26, technical/flagrant gap closed 8/23/26
 
-Verified exactly against a real Sleeper score (Jokić vs. PHX, 3/7/25, 113.10) — confirmed double-double/triple-double bonuses stack. No technical/flagrant foul data available; accepted as a known gap (a tech is usually accompanied by other red flags anyway).
+Verified exactly against a real Sleeper score (Jokić vs. PHX, 3/7/25, 113.10) — confirmed double-double/triple-double bonuses stack.
+
+**Technical/flagrant foul penalty — CLOSED 8/23/26 (previously an accepted gap).** This league's real Sleeper scoring docks -2.0 per technical foul and -2.0 per flagrant foul; neither was previously implemented, since `game_logs` has no column distinguishing them from an ordinary personal foul. The original assumption ("a tech is usually accompanied by other red flags anyway") undersold the real impact — a full audit found 168 individual game-scores affected by this gap in the 2024-25/2025-26 seasons alone. Backfilled via `scripts/backfill_technical_flagrant_fouls.py` from `PlayByPlayV3`, with every foul subtype (`Technical`, `Flagrant Type 1/2`, `Double Technical`, `Hanging Technical`, and several confirmed-no-penalty categories like `Defense 3 Second` and `Flopping`) individually hand-verified against real Sleeper scores or the NBA's own rulebook — not assumed from label text, which was proven repeatedly unsafe (e.g. `Defense 3 Second`'s description literally contains "T.Foul" but carries no real penalty). See `architecture_risks.md`'s new items for the two real bugs this work surfaced along the way.
 
 ## Ownable Player Pool — Defined 8/4/26
 
 Eligibility: `mean + k*stddev >= threshold` (ceiling-based, not raw average — average-based selection misses streamer-type spike players). Calibrated **k=1.25, threshold=35** via Phase 1 sensitivity grid (stricter option preferred over higher clear-rate alternative). Target pool size ~150-210/season.
+
+**8/22/26:** Added a rolling-last-20-games bootstrap fallback for players without 20+ games logged in the current season yet (season-start cold-start problem). **8/23/26:** that same fix had a real bug — see `architecture_risks.md` #9 — fixed and reverified.
 
 ## Player Tiers — Added 8/9/26
 
@@ -54,4 +60,5 @@ Weekly-outcome simulator: walks each player's real games in order, banks the fir
 
 1. **Replacement-level value (PASS outcomes)** — still a flat 30 placeholder (see "Ownable Pool Simulation" above), not derived from real waiver-wire data. Sleeper roster/transaction data is live now (v3.0), so this is buildable — just not yet built.
 2. **v2 parking lot, genuinely untouched (not tried-and-rejected like v2.0's team signals):** position-based scoring; draft-pick analysis — Sleeper's `/traded_picks` endpoint was scoped in v3.0's roadmap but never actually ingested.
-3. **Non-functional backlog, not new scope:** consistency/refactor items (`docs/patch_list.md`) and correctness-risk items (`docs/architecture_risks.md`) — centralizing the duplicated `lock_bar` formula is the highest-priority item on either.
+3. **Non-functional backlog, not new scope:** consistency/refactor items (`docs/patch_list.md`) — architecture-risk items are now fully closed (11/11, see `docs/architecture_risks.md`).
+4. **`sleeper_matchup_points_snapshots` staleness monitoring** — v3.1 fixed one real instance of a completed season's snapshots drifting stale relative to reality (`architecture_risks.md` #10), but nothing proactively re-checks this for a future completed season. Worth a periodic/scheduled re-verification once a season wraps, rather than relying on someone happening to run a full audit again.
