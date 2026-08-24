@@ -1,5 +1,5 @@
 """
-scripts/build_sleeper_player_crosswalk.py
+scripts/sleeper/build_sleeper_player_crosswalk.py
 
 Builds sleeper_player_crosswalk via normalized full-name matching --
 Sleeper's cross-reference IDs aren't confirmed to equal nba_api's
@@ -49,6 +49,21 @@ case where nba_api's own row carries a *conflicting* suffix, or the
 stripped key maps to more than one nba_player_id, is routed to a new
 `suffix_conflict` bucket for manual review instead of being auto-matched
 -- never guessed at silently.
+
+FANTASY POSITIONS (added 8/23/26, v3.2): also syncs
+sleeper_player_fantasy_positions (see schema/tables/), one row per
+eligible position, sourced from Sleeper's real `fantasy_positions` array
+-- not the singular `position` field used elsewhere in this file for the
+crosswalk's own sleeper_position column, which was confirmed to silently
+collapse 68% of multi-eligible players down to one position. Only synced
+for players that got a real crosswalk match this run (ambiguous/
+suffix-conflict/unmatched players have no crosswalk row for the FK to
+point at). DEF (team-defense) is filtered out -- confirmed via a full
+directory scan that it never applies to an individual NBA player, and
+no generic/group labels (F, G, UTIL) ever appear player-side. Full
+delete-then-reinsert per player each run, matching roster_ownership's
+current-state-only pattern -- there's no historical position tracking to
+preserve, and the row count itself changes whenever eligibility does.
 """
 
 import sys
@@ -127,6 +142,32 @@ def get_league_player_ids(cur, league_ids):
             ids.update(drops.keys())
 
     return ids
+
+
+def sync_player_fantasy_positions(cur, sleeper_id, fantasy_positions):
+    """Full delete-then-reinsert of this one player's eligible positions --
+    matches roster_ownership's current-state-only pattern rather than an
+    incremental diff, since the row COUNT changes whenever eligibility
+    changes (no stable key to diff against, and nothing historical worth
+    preserving). DEF (team-defense) is dropped -- confirmed via a full
+    directory scan (inspect_all_fantasy_position_values.py, 8/23/26) to
+    never apply to an individual NBA player; only C/PF/PG/SF/SG are ever
+    real player-side values."""
+    cur.execute(
+        "DELETE FROM sleeper_player_fantasy_positions WHERE sleeper_player_id = %s;",
+        (sleeper_id,),
+    )
+    positions = {pos for pos in (fantasy_positions or []) if pos and pos != "DEF"}
+    for pos in positions:
+        cur.execute(
+            """
+            INSERT INTO sleeper_player_fantasy_positions (sleeper_player_id, position)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING;
+            """,
+            (sleeper_id, pos),
+        )
+    return len(positions)
 
 
 def fetch_all_nba_players():
@@ -208,6 +249,7 @@ def run():
     nba_exact_lookup, nba_stripped_lookup = build_nba_name_lookups(cur)
 
     matched, ambiguous, suffix_conflicts, unmatched, skipped_duplicates = 0, [], [], [], []
+    positions_synced_players, positions_synced_rows = 0, 0
 
     for sleeper_id, p in relevant.items():
         full_name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
@@ -256,6 +298,10 @@ def run():
             """, (sleeper_id, candidates[0], full_name, p.get("team"), p.get("position"),
                   match_method, metadata))
             matched += 1
+
+            n_positions = sync_player_fantasy_positions(cur, sleeper_id, p.get("fantasy_positions"))
+            positions_synced_players += 1
+            positions_synced_rows += n_positions
         elif len(candidates) > 1:
             ambiguous.append((sleeper_id, full_name, candidates))
         else:
@@ -266,6 +312,10 @@ def run():
     conn.close()
 
     print(f"\nMatched: {matched}")
+    print(f"Fantasy positions synced: {positions_synced_players} player(s), "
+          f"{positions_synced_rows} position row(s) total "
+          f"({positions_synced_rows / positions_synced_players:.2f} avg/player)"
+          if positions_synced_players else "Fantasy positions synced: 0 players")
     print(f"Skipped as Sleeper DUPLICATE placeholder records: {len(skipped_duplicates)}")
     for sid, name in skipped_duplicates:
         print(f"  {name} (sleeper_id={sid})")
