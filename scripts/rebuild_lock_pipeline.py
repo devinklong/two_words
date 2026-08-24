@@ -43,16 +43,36 @@ floods the terminal when run as part of an automated rebuild. Nothing
 is lost -- full output is still saved per step -- it's just not
 printed by default.
 
-The FINAL check is a real regression test against the exact numbers
-confirmed correct on 8/16/26 (patch #1) and re-confirmed by hand
-8/19/26: LOCK/HOLD/PASS split and Nikola Jokić's lock_bar specifically
-on 2024-11-22 (season 22024, lock_bar=79.490 -- Jokić has a DIFFERENT
-lock_bar per season since it's derived from that season's avg/stddev,
-so the check pins to a specific game_date, not just player_id, or it
-can silently grab a different season's correct-but-different value and
-falsely report a mismatch). A script that only checks object existence
-can pass while the underlying numbers are silently wrong -- this one
-can't.
+The FINAL check is a real regression test against known-good numbers,
+updated as of 8/23/26 -- see below for the full history of what
+changed and why.
+
+UPDATED 8/23/26: baseline moved from the original 8/16/26 values
+(HOLD/LOCK/PASS 52.7/24.2/23.0, Jokić lock_bar=79.490) after TWO real,
+confirmed formula corrections went live the same day, not a
+regression:
+  (1) Technical/flagrant foul penalties (-2.0 each) were entirely
+      missing from game_fantasy_scores until 8/23/26 -- confirmed via
+      a full hand-verified investigation (multiple real games checked
+      directly against Sleeper's actual recorded scores) and backfilled
+      via scripts/backfill_technical_flagrant_fouls.py. A handful of
+      games that used to clear lock_bar correctly no longer do once
+      their real penalty is subtracted.
+  (2) ownable_player_pool.sql had a real bug from the #9 season-
+      bootstrap redesign (8/22/26): its current_season_stats CTE
+      filtered to ONLY the live current season, silently zeroing out
+      every OTHER historical season in the view -- collapsing
+      game_lock_signal from ~122,573 rows down to ~9,509 (roughly one
+      season's worth of data total across the whole 5-season history).
+      Fixed 8/23/26: historical seasons now read
+      player_season_fantasy_stats directly again, exactly as before
+      #9; the rolling bootstrap is correctly scoped to the current
+      season only.
+Both fixes are confirmed correct and intentional -- the new baseline
+below reflects the formula actually being right, not a target to keep
+matching forever if it changes again for a real reason. If this check
+ever fails again, verify whether the underlying formula/data
+genuinely changed on purpose (like today) before assuming a bug.
 
 Run from the project root:
     python scripts/rebuild_lock_pipeline.py
@@ -67,8 +87,12 @@ from db_connection import get_connection
 
 PGCONN = "postgres"
 
-EXPECTED_SPLIT = {"HOLD": 52.7, "LOCK": 24.2, "PASS": 23.0}
-EXPECTED_JOKIC_LOCK_BAR = 79.490
+# UPDATED 8/23/26 -- see module docstring above for the full history of
+# why these moved from the original 8/16/26 values (52.7/24.2/23.0,
+# 79.490). Both changes are confirmed correct formula fixes, not a
+# regression to chase.
+EXPECTED_SPLIT = {"HOLD": 52.7, "LOCK": 24.3, "PASS": 23.0}
+EXPECTED_JOKIC_LOCK_BAR = 79.465
 JOKIC_PLAYER_ID = 203999
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
