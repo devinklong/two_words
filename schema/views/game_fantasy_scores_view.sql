@@ -27,10 +27,29 @@
 -- decision made 8/13/26, this project is league-specific and these
 -- aren't expected to change.
 --
--- Known limitation, accepted: technical/flagrant foul penalties are NOT
--- included, since game_logs has no columns distinguishing them from
--- ordinary personal fouls. Games with a technical/flagrant will score
--- slightly higher here than the real Sleeper result.
+-- TECHNICAL/FLAGRANT FOUL PENALTY — ADDED 8/23/26, closing a
+-- previously-accepted limitation. This league's real Sleeper
+-- scoring_settings docks -2.0 per technical foul (tf) and -2.0 per
+-- flagrant foul (ff) — confirmed directly against real games, not
+-- assumed (see docs/architecture_risks.md's tech-foul investigation).
+-- Same treatment as the 40/50-pt bonuses above: hardcoded rather than
+-- pulled from sleeper_scoring_constants, since that table's mapped
+-- columns don't currently include tf/ff and the real value is
+-- confirmed stable. Sourced from player_technical_flagrant_fouls
+-- (backfilled via scripts/backfill_technical_flagrant_fouls.py from
+-- PlayByPlayV3) rather than game_logs, since game_logs has no column
+-- distinguishing a technical/flagrant from an ordinary personal foul.
+-- LEFT JOIN + COALESCE(..., 0): a player with zero technicals/
+-- flagrants that game (the overwhelming majority) simply isn't in the
+-- fouls table at all — same "no row = no penalty" pattern the rest of
+-- this view already uses for optional joins.
+--
+-- Known limitation, now resolved above — kept here as a historical
+-- note: this view previously did NOT include technical/flagrant foul
+-- penalties at all, since game_logs has no columns distinguishing them
+-- from ordinary personal fouls. Games with a technical/flagrant used
+-- to score slightly higher here than the real Sleeper result; that gap
+-- is now closed for any game covered by the backfill.
 
 DROP VIEW IF EXISTS game_fantasy_scores CASCADE;
 
@@ -68,6 +87,8 @@ WITH stat_lines AS (
             (gl.stl >= 10)::INT +
             (gl.blk >= 10)::INT
         ) AS double_digit_categories,
+        COALESCE(tff.technical_fouls, 0) AS technical_fouls,
+        COALESCE(tff.flagrant_fouls, 0)  AS flagrant_fouls,
         COALESCE(ssc.pts_mult, 0.5)    AS pts_mult,
         COALESCE(ssc.reb_mult, 1.5)    AS reb_mult,
         COALESCE(ssc.oreb_mult, 0.5)   AS oreb_mult,
@@ -85,6 +106,8 @@ WITH stat_lines AS (
     FROM game_logs gl
     LEFT JOIN sleeper_scoring_constants ssc
         ON ssc.season_id = gl.season_id
+    LEFT JOIN player_technical_flagrant_fouls tff
+        ON tff.player_id = gl.player_id AND tff.game_id = gl.game_id
 )
 SELECT
     game_id,
@@ -114,6 +137,8 @@ SELECT
     double_digit_categories,
     (double_digit_categories >= 2) AS is_double_double,
     (double_digit_categories >= 3) AS is_triple_double,
+    technical_fouls,
+    flagrant_fouls,
     ROUND(
         pts_mult  * pts
       + reb_mult  * reb
@@ -133,6 +158,8 @@ SELECT
       + CASE WHEN pts >= 50 THEN 2 ELSE 0 END                            -- 50+ points bonus (hardcoded, stacks)
       + CASE WHEN ast >= 15 THEN 1 ELSE 0 END                            -- 15+ assists bonus (hardcoded)
       + CASE WHEN reb >= 20 THEN 1 ELSE 0 END                            -- 20+ rebounds bonus (hardcoded)
+      + (technical_fouls * -2.0)                                        -- technical foul penalty (hardcoded, confirmed 8/23/26)
+      + (flagrant_fouls * -2.0)                                         -- flagrant foul penalty (hardcoded, confirmed 8/23/26)
     , 2) AS fantasy_score
 FROM stat_lines;
 
@@ -155,6 +182,13 @@ FROM game_fantasy_scores gfs
 JOIN players p ON p.player_id = gfs.player_id
 WHERE p.full_name ILIKE '%joki%' AND gfs.game_date = '2025-03-07';
 
+-- New: the two directly-confirmed technical-foul test cases from this
+-- session should compute EXACTLY the real Sleeper values now
+SELECT p.full_name, gfs.game_id, gfs.game_date, gfs.technical_fouls, gfs.flagrant_fouls, gfs.fantasy_score
+FROM game_fantasy_scores gfs
+JOIN players p ON p.player_id = gfs.player_id
+WHERE gfs.game_id = '0022400064' AND p.full_name ILIKE '%cam thomas%';
+
 -- Sanity check the overall distribution — min/max/avg fantasy score
 -- across everyone, useful gut-check before trusting this for the
 -- benchmark layer
@@ -171,10 +205,3 @@ FROM game_fantasy_scores gfs
 JOIN players p ON p.player_id = gfs.player_id
 ORDER BY gfs.fantasy_score DESC
 LIMIT 10;
-
-SELECT ps.season_id, ps.games_played, ps.avg_fantasy_score, ps.stddev_fantasy_score,
-       ps.avg_fantasy_score + 1.25*ps.stddev_fantasy_score AS spike_calc
-FROM player_season_fantasy_stats ps
-JOIN sleeper_player_crosswalk c ON c.nba_player_id = ps.player_id
-WHERE c.sleeper_full_name = 'Khaman Maluach'
-ORDER BY ps.season_id;
