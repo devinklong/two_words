@@ -22,6 +22,33 @@ has synced the new season -- no edit needed here.
 ASSUMPTION flagged for review: assumes `players` has a `full_name`
 column to match against -- adjust NBA_NAME_QUERY below if the real
 schema differs.
+
+SUFFIX HANDLING (fixed 8/23/26 after 1924/2445/2009/2414 were found
+silently mismatched -- see cleaning_logs/ and docs/methodology_notes.md):
+normalize_name() already strips punctuation from a suffix token before
+comparing, so "Jr." vs "Jr" was never the actual problem. The real gap
+was the suffix-stripped fallback tier: when the exact suffix-intact name
+didn't match, the old code fell back to comparing suffix-STRIPPED names
+and trusted a single resulting candidate blindly. That's unsafe --
+Sr/Jr pairs (or any two real people who share a base name) collapse to
+the same stripped key, so "only one candidate" doesn't actually prove
+it's the right person; a same-named different-generation player being
+absent or differently formatted in `players` can make the fallback
+confidently pick the wrong row. Kevin Porter Jr./Jaren Jackson Jr./
+Jabari Smith Jr. all mismatched this way (an unrelated same-name entry
+in `players` was the only candidate at the stripped-key level). Orlando
+Robinson Jr. mismatched a different way -- his `players` row has no
+suffix on file at all, but that WAS actually the safe case; it just
+happened to have gone unmatched previously for other reasons.
+
+Fix: the stripped-name fallback now only auto-accepts a match when the
+candidate genuinely carries no suffix in `players` (i.e. it can't be
+confused with a same-named other generation) or when there's exactly one
+plausible match and the sleeper record's suffix is authoritative. Any
+case where nba_api's own row carries a *conflicting* suffix, or the
+stripped key maps to more than one nba_player_id, is routed to a new
+`suffix_conflict` bucket for manual review instead of being auto-matched
+-- never guessed at silently.
 """
 
 import sys
@@ -55,6 +82,12 @@ def normalize_name(name, strip_suffix=False):
         name = re.sub(r"\b(jr|sr|ii|iii|iv)\.?\b", "", name)
     name = re.sub(r"[^\w\s]", "", name)
     return re.sub(r"\s+", " ", name).strip()
+
+
+def has_suffix(name):
+    """True if the name carries a Jr/Sr/II/III/IV token -- used to detect when the
+    exact-intact and suffix-stripped normalized forms actually differ."""
+    return normalize_name(name, strip_suffix=False) != normalize_name(name, strip_suffix=True)
 
 
 def is_duplicate_placeholder(full_name):
@@ -106,14 +139,56 @@ def fetch_all_nba_players():
 def build_nba_name_lookups(cur):
     """Two lookups: suffix-intact (tried first, so real Sr/Jr pairs stay distinct) and
     suffix-stripped (fallback only, for cases where one source includes the suffix and
-    the other doesn't)."""
+    the other doesn't). The stripped lookup now carries each candidate's own
+    (player_id, original_full_name, had_suffix) so the fallback can tell whether a
+    candidate is genuinely suffix-free (safe) or carries a conflicting suffix (unsafe)."""
     cur.execute(NBA_NAME_QUERY)
     rows = cur.fetchall()
     exact_lookup, stripped_lookup = {}, {}
     for player_id, full_name in rows:
         exact_lookup.setdefault(normalize_name(full_name, strip_suffix=False), []).append(player_id)
-        stripped_lookup.setdefault(normalize_name(full_name, strip_suffix=True), []).append(player_id)
+        stripped_key = normalize_name(full_name, strip_suffix=True)
+        stripped_lookup.setdefault(stripped_key, []).append((player_id, full_name, has_suffix(full_name)))
     return exact_lookup, stripped_lookup
+
+
+def resolve_suffix_stripped_match(sleeper_full_name, stripped_candidates):
+    """Decide whether it's SAFE to auto-match via the suffix-stripped fallback, or
+    whether this needs manual review instead.
+
+    stripped_candidates: list of (nba_player_id, nba_full_name, nba_had_suffix) that
+    share the sleeper record's suffix-stripped normalized name.
+
+    Returns (player_id, match_method) on a safe match, or (None, reason) when this
+    should be routed to manual review rather than guessed at.
+
+    This is the fix for the 1924/2445/2009/2414 mismatches (8/23/26): the old code
+    accepted ANY single candidate here, which silently mismatched real players whenever
+    a same-named different generation existed in `players` under the same stripped key.
+    """
+    if len(stripped_candidates) > 1:
+        # Multiple distinct nba_player_ids share this base name (e.g. both a Sr. and a
+        # Jr. are on file) -- picking one would be a guess. Always defer to manual review.
+        return None, "suffix_conflict_multiple_candidates"
+
+    if not stripped_candidates:
+        return None, "no_candidate"
+
+    player_id, nba_full_name, nba_had_suffix = stripped_candidates[0]
+    sleeper_has_suffix = has_suffix(sleeper_full_name)
+
+    if sleeper_has_suffix and nba_had_suffix:
+        # Both sides carry an explicit suffix but didn't agree on the exact-intact pass
+        # -- the only way that happens is the suffixes themselves differ (e.g. sleeper
+        # says "Jr.", nba's own row says "Sr."). That's two different real people --
+        # never auto-match.
+        return None, "suffix_conflict_mismatched_generation"
+
+    # Remaining case is safe: exactly one nba row shares this base name, and at least
+    # one side (usually nba_api's `players` table) simply never recorded a suffix for
+    # this specific person -- e.g. Orlando Robinson Jr.'s `players` row is just
+    # "Orlando Robinson", no "Jr." on file, with no other candidate to confuse it with.
+    return player_id, "exact_name_suffix_stripped"
 
 
 def run():
@@ -132,7 +207,7 @@ def run():
 
     nba_exact_lookup, nba_stripped_lookup = build_nba_name_lookups(cur)
 
-    matched, ambiguous, unmatched, skipped_duplicates = 0, [], [], []
+    matched, ambiguous, suffix_conflicts, unmatched, skipped_duplicates = 0, [], [], [], []
 
     for sleeper_id, p in relevant.items():
         full_name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
@@ -141,15 +216,25 @@ def run():
             skipped_duplicates.append((sleeper_id, full_name))
             continue
 
-        # Try suffix-intact first (keeps real Sr/Jr pairs distinct); fall back to
-        # suffix-stripped only if the exact form finds nothing.
+        # Try suffix-intact first (keeps real Sr/Jr pairs distinct); fall back to a
+        # suffix-stripped comparison only if the exact form finds nothing -- and even
+        # then, only auto-accept if resolve_suffix_stripped_match() judges it safe.
         norm_exact = normalize_name(full_name, strip_suffix=False)
         candidates = nba_exact_lookup.get(norm_exact, [])
         match_method = "exact_name"
+
         if not candidates:
             norm_stripped = normalize_name(full_name, strip_suffix=True)
-            candidates = nba_stripped_lookup.get(norm_stripped, [])
-            match_method = "exact_name_suffix_stripped"
+            stripped_candidates = nba_stripped_lookup.get(norm_stripped, [])
+            resolved_id, result = resolve_suffix_stripped_match(full_name, stripped_candidates)
+            if resolved_id is not None:
+                candidates = [resolved_id]
+                match_method = result
+            elif result in ("suffix_conflict_multiple_candidates", "suffix_conflict_mismatched_generation"):
+                suffix_conflicts.append((sleeper_id, full_name, [c[0] for c in stripped_candidates], result))
+                continue
+            # else result == "no_candidate": candidates stays [] and falls through
+            # to the normal unmatched bucket below, same as before.
 
         metadata = json.dumps({
             "espn_id": p.get("espn_id"), "sportradar_id": p.get("sportradar_id"),
@@ -184,14 +269,17 @@ def run():
     print(f"Skipped as Sleeper DUPLICATE placeholder records: {len(skipped_duplicates)}")
     for sid, name in skipped_duplicates:
         print(f"  {name} (sleeper_id={sid})")
-    print(f"Ambiguous (multiple nba_player_id candidates for the same normalized name): {len(ambiguous)}")
+    print(f"Ambiguous (multiple nba_player_id candidates on the exact-intact pass): {len(ambiguous)}")
     for sid, name, cands in ambiguous:
         print(f"  {name} (sleeper_id={sid}) -> candidates: {cands}")
+    print(f"Suffix conflicts (Jr/Sr/etc. -- needs manual review, NOT auto-matched): {len(suffix_conflicts)}")
+    for sid, name, cands, reason in suffix_conflicts:
+        print(f"  {name} (sleeper_id={sid}) -> candidates: {cands} [{reason}]")
     print(f"Unmatched (no candidate found -- likely a name-format mismatch, needs manual review): {len(unmatched)}")
     for sid, name in unmatched:
         print(f"  {name} (sleeper_id={sid})")
-    print("\nAmbiguous/unmatched rows are NOT in sleeper_player_crosswalk yet -- resolve manually")
-    print("(check cleaning_logs/ convention) then insert with match_method='manual'.")
+    print("\nAmbiguous/suffix-conflict/unmatched rows are NOT in sleeper_player_crosswalk yet -- resolve")
+    print("manually (check cleaning_logs/ convention) then insert with match_method='manual'.")
 
 
 if __name__ == "__main__":
