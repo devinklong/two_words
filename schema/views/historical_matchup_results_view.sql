@@ -21,6 +21,21 @@ LEFT JOIN sleeper_users su ON su.league_id = sr.league_id AND su.user_id = sr.ow
 -- each specific day, and that information no longer exists anywhere
 -- except in Sleeper's own already-computed point totals.
 --
+-- FIXED 8/26/26 (real, live violation of this project's own
+-- architecture rule, caught during a project-status review -- not
+-- hypothetical, confirmed present in the deployed file): the previous
+-- version joined sleeper_rosters/sleeper_users DIRECTLY (as sr1/su1,
+-- sr2/su2), bypassing sleeper_roster_labels_current -- the exact
+-- current-state-only display-layer view built two lines above for
+-- this purpose. sleeper_rosters/sleeper_users carry no history, so a
+-- direct join would silently attach a roster_id's CURRENT owner name
+-- to OLD historical results the moment that roster ever changes hands
+-- (trade, ownership transfer, league-member replacement) -- likely
+-- invisible today only because no such change has happened yet in
+-- this league's real history. Now correctly routes through
+-- sleeper_roster_labels_current, matching every other correctness-
+-- bearing view in this project (transaction_players_detail, etc.).
+--
 -- No league_id filter -- for 2026-27 (or any week not yet played),
 -- sleeper_matchup_points_snapshots simply has no rows yet, so this
 -- naturally returns NULL points/result for those rows via the LEFT
@@ -35,10 +50,10 @@ SELECT
     fm.league_id,
     fm.week,
     fm.roster_id,
-    su1.display_name AS owner_name,
+    rl1.current_owner_name AS owner_name,
     smp1.points AS team_points,
     fm.opponent_roster_id,
-    su2.display_name AS opponent_owner_name,
+    rl2.current_owner_name AS opponent_owner_name,
     smp2.points AS opponent_points,
     CASE
         WHEN fm.opponent_roster_id IS NULL THEN NULL          -- bye week
@@ -52,14 +67,10 @@ LEFT JOIN sleeper_matchup_points_latest smp1
     ON smp1.league_id = fm.league_id AND smp1.week = fm.week AND smp1.roster_id = fm.roster_id
 LEFT JOIN sleeper_matchup_points_latest smp2
     ON smp2.league_id = fm.league_id AND smp2.week = fm.week AND smp2.roster_id = fm.opponent_roster_id
-LEFT JOIN sleeper_rosters sr1
-    ON sr1.league_id = fm.league_id AND sr1.roster_id = fm.roster_id
-LEFT JOIN sleeper_users su1
-    ON su1.league_id = sr1.league_id AND su1.user_id = sr1.owner_id
-LEFT JOIN sleeper_rosters sr2
-    ON sr2.league_id = fm.league_id AND sr2.roster_id = fm.opponent_roster_id
-LEFT JOIN sleeper_users su2
-    ON su2.league_id = sr2.league_id AND su2.user_id = sr2.owner_id;
+LEFT JOIN sleeper_roster_labels_current rl1
+    ON rl1.league_id = fm.league_id AND rl1.roster_id = fm.roster_id
+LEFT JOIN sleeper_roster_labels_current rl2
+    ON rl2.league_id = fm.league_id AND rl2.roster_id = fm.opponent_roster_id;
 
 -- historical_standings: same regular-season-only (week <= 21) logic as
 -- fantasy_matchup_results' standings query, sourced from
