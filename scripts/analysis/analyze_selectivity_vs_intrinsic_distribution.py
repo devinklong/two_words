@@ -20,9 +20,19 @@ are NOT uniformly higher (player_scores_by_position_tier):
 Only 2024 and 2025 are used (the only seasons with real locked data in
 player_scores) -- raw distributions are pulled from the SAME two
 seasons for a fair comparison, not the full 5-season player-side
-history. Only the 5 dedicated positions (PG/SG/SF/PF/C) are included --
-G, F, and UTIL slots don't map to one single raw position, so a direct
-percentile-within-position comparison isn't meaningful for them.
+history.
+
+G/F FLEX EXTENSION (new): the original version only covered the 5
+dedicated positions (PG/SG/SF/PF/C), since G-flex and F-flex don't map
+to one single raw position. This adds them back in by COLLAPSING the
+raw distribution the same way the player-side G/F/C analysis did
+(PG+SG -> G, SF+PF -> F) and comparing locked G/F-slot scores against
+that collapsed raw pool. Answers a real open question from the team-side
+slot analysis: is the G-flex slot's weak locked performance a
+selectivity story (owners settling for whichever guard is left over)
+or an intrinsic-distribution story (the collapsed pool is just
+structurally worse)? Same two-test logic as the dedicated positions,
+applied to the collapsed pool.
 
 DELIBERATELY Python, not multi-CTE SQL: matches the established pattern
 of every other script in this suite (analyze_position_scoring_
@@ -46,6 +56,7 @@ from db_connection import get_connection
 import numpy as np
 
 DEDICATED_POSITIONS = {"PG", "SG", "SF", "PF", "C"}
+GF_COLLAPSE = {"PG": "G", "SG": "G", "SF": "F", "PF": "F"}
 
 RAW_SCORES_QUERY = """
     SELECT season_id, tier, position, fantasy_score
@@ -58,6 +69,12 @@ LOCKED_SCORES_QUERY = """
     SELECT season, tier, slot, points
     FROM locked_scores_by_slot
     WHERE slot IN ('PG', 'SG', 'SF', 'PF', 'C');
+"""
+
+LOCKED_GF_QUERY = """
+    SELECT season, tier, slot, points
+    FROM locked_scores_by_slot
+    WHERE slot IN ('G', 'F');
 """
 
 
@@ -76,6 +93,25 @@ def fetch_locked_scores(cur):
     return cur.fetchall()
 
 
+def fetch_locked_gf_scores(cur):
+    cur.execute(LOCKED_GF_QUERY)
+    return cur.fetchall()
+
+
+def build_collapsed_gf_raw_pool(raw_scores):
+    """Collapses the dedicated-position raw distributions into G (PG+SG)
+    and F (SF+PF) pools, same mapping as the player-side G/F/C analysis
+    -- lets locked G/F-flex scores be tested against a real raw
+    distribution instead of being skipped entirely."""
+    collapsed = defaultdict(list)
+    for (season_id, tier, position), scores in raw_scores.items():
+        group = GF_COLLAPSE.get(position)
+        if group is None:
+            continue
+        collapsed[(season_id, tier, group)].extend(scores.tolist())
+    return {key: np.sort(np.array(scores)) for key, scores in collapsed.items()}
+
+
 def percentile_rank(sorted_raw_array, value):
     """Fraction of raw_array <= value, as a percentile (0-100) --
     np.searchsorted on a pre-sorted array is O(log n), no per-row
@@ -84,14 +120,14 @@ def percentile_rank(sorted_raw_array, value):
     return 100.0 * n_at_or_below / len(sorted_raw_array)
 
 
-def run_selectivity_test(raw_scores, locked_rows):
+def run_selectivity_test(raw_scores, locked_rows, label="dedicated positions"):
     """H1 test: average percentile rank of locked scores within their
     OWN position's raw distribution, per (season, position). A markedly
     higher average for C than for other positions is real evidence of
     C-specific selective locking behavior; similar averages across
     positions point to H2 instead (the raw distribution shape already
     explains it, no special behavior needed)."""
-    print("\n=== Selectivity test: avg percentile rank of locked scores within their own raw distribution ===")
+    print(f"\n=== Selectivity test ({label}): avg percentile rank of locked scores within their own raw distribution ===")
     ranks_by_season_position = defaultdict(list)
     skipped = 0
     for season, tier, slot, points in locked_rows:
@@ -111,14 +147,14 @@ def run_selectivity_test(raw_scores, locked_rows):
         print(f"{str(season):<8}{slot:<6}{len(ranks):>6}{np.mean(ranks):>22.1f}")
 
 
-def run_right_tail_test(raw_scores):
+def run_right_tail_test(raw_scores, label="dedicated positions"):
     """H2 test, fully independent of any locking behavior: for each
     position's raw distribution, compares upper-tail spread (p90-p50)
     against lower/typical spread (p50-p10). Near 1.0 = symmetric. Well
     above 1.0 = disproportionate right-tail room -- exactly the shape
     lock_bar's ceiling-chasing design (mean + 0.5*stddev) is built to
     exploit, with zero behavioral component."""
-    print("\n=== Intrinsic right-tail test: (p90-p50)/(p50-p10) per raw distribution, no locking behavior involved ===")
+    print(f"\n=== Intrinsic right-tail test ({label}): (p90-p50)/(p50-p10) per raw distribution, no locking behavior involved ===")
     print(f"{'season':<8}{'tier':<10}{'pos':<5}{'n':>6}{'p10':>8}{'p50':>8}{'p90':>8}{'right_tail_ratio':>18}")
     for (season_id, tier, position), scores in sorted(
         raw_scores.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]), kv[0][2])
@@ -140,15 +176,21 @@ def run():
     cur = conn.cursor()
     raw_scores = fetch_raw_scores(cur)
     locked_rows = fetch_locked_scores(cur)
+    locked_gf_rows = fetch_locked_gf_scores(cur)
     cur.close()
     conn.close()
 
     total_raw = sum(len(v) for v in raw_scores.values())
     print(f"{total_raw} raw score(s) pulled across {len(raw_scores)} (season, tier, position) bucket(s).")
     print(f"{len(locked_rows)} locked score(s) pulled (dedicated positions only, G/F/UTIL excluded).")
+    print(f"{len(locked_gf_rows)} locked G/F-flex score(s) pulled separately.")
 
     run_selectivity_test(raw_scores, locked_rows)
     run_right_tail_test(raw_scores)
+
+    collapsed_gf_raw = build_collapsed_gf_raw_pool(raw_scores)
+    run_selectivity_test(collapsed_gf_raw, locked_gf_rows, label="G/F flex, vs. collapsed PG+SG / SF+PF raw pool")
+    run_right_tail_test(collapsed_gf_raw, label="G/F flex collapsed pool")
 
 
 if __name__ == "__main__":
