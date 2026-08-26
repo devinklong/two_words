@@ -32,6 +32,29 @@ Fallback is capped to exactly ONE year back, derived automatically from
 season_id's format (e.g. '22026' -> '22025') -- see get_spike_profile's
 docstring.
 
+DURABILITY SIGNAL (added 8/25/26): same real v3.2 finding waiver_wire_
+finder.py picked up -- avg_fantasy_score alone can look great off a
+shrinking sample size (real examples: Joel Embiid 23% of games played
+in his worst season, Anthony Davis 24% in his). Adds each player's
+real games_played against that season's real max games by any single
+player -- flagged when it drops below DURABILITY_FLAG_THRESHOLD.
+CONFIRMED 8/26/26 via `\\d player_tiers`: the view does NOT expose
+games_played as a column, despite filtering on it internally. Fixed
+by joining player_tiers to a fresh COUNT(DISTINCT game_id) from
+game_logs instead -- the original ASSUMPTION was wrong, caught by a
+real UndefinedColumn error on first run.
+
+NBA-TEAM STACKING FLAG (added 8/25/26): another real v3.2 finding with
+no signal here before. Confirmed (analyze_stacking_roster_construction.py,
+within-roster controlled test): a roster with 2+ players sharing a real
+NBA team shows real, meaningfully HIGHER week-to-week VARIANCE, but NO
+confirmed effect on win rate once team quality is controlled for --
+worded carefully below to match that finding exactly, not oversold as
+a competitive edge either direction. ASSUMPTION flagged for review:
+uses each player's MODE team_id for the season (most games played for
+one team), the same simplification used in the original analysis, not
+the exact team for a specific week.
+
 LIMITATION: this ranks threat level from each player's season profile.
 It is not a live/actual-game prediction -- there's no way to know a
 player will spike a specific future week, only how capable they are of
@@ -42,8 +65,11 @@ Run:
 """
 
 import argparse
+from collections import defaultdict
 
 from db_connection import get_connection
+
+DURABILITY_FLAG_THRESHOLD = 0.65  # flag, not a hard cutoff -- not a validated number, see docstring
 
 
 # =========================
@@ -111,7 +137,88 @@ def get_opponent_players(conn, league_id: str, roster_id: int) -> list[dict]:
     ]
 
 
-def get_spike_profile(conn, nba_player_id: int, season_id: str) -> dict | None:
+# =========================
+# Durability context
+# =========================
+
+def get_season_max_games(conn, season_id: str) -> int:
+    """Max real games played by any single player that season, from
+    game_logs -- the denominator for each player's durability %. Same
+    pattern already validated in the v3.2 player-side games-played
+    check."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT MAX(games_played) FROM (
+            SELECT player_id, COUNT(DISTINCT game_id) AS games_played
+            FROM game_logs
+            WHERE season_id = %s
+            GROUP BY player_id
+        ) per_player
+    """, (season_id,))
+    row = cur.fetchone()
+    cur.close()
+    return row[0] if row and row[0] else None
+
+
+# =========================
+# NBA-team stacking context
+# =========================
+
+def get_player_mode_team(conn, nba_player_id: int, season_id: str) -> int | None:
+    """Each player's most-played real NBA team that season -- same
+    simplification used in analyze_stacking_roster_construction.py, not
+    the exact team for a specific week (no game-level team context
+    available without a separate score-matching step)."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT team_id, COUNT(*) AS n_games
+        FROM game_logs
+        WHERE player_id = %s AND season_id = %s
+        GROUP BY team_id
+        ORDER BY n_games DESC
+        LIMIT 1
+    """, (nba_player_id, season_id))
+    row = cur.fetchone()
+    cur.close()
+    return row[0] if row else None
+
+
+def get_player_team_with_fallback(conn, nba_player_id: int, season_id: str) -> int | None:
+    """Same one-year-back fallback as get_spike_profile -- REAL BUG
+    FIXED 8/26/26: an earlier version passed the raw --season-id
+    straight through with no fallback, so for a season with no games
+    logged yet (e.g. 22026 before it starts), every team lookup
+    silently returned None and the stacking check found nothing even
+    when a real stack existed (confirmed case: two players both really
+    on Golden State, season's real stats coming from the 22025
+    fallback, team lookup querying 22026 and finding zero rows)."""
+    team = get_player_mode_team(conn, nba_player_id, season_id)
+    if team is not None:
+        return team
+    fallback_season_id = str(int(season_id) - 1)
+    return get_player_mode_team(conn, nba_player_id, fallback_season_id)
+
+
+def find_stacked_groups(report: list[dict], conn, season_id: str) -> dict:
+    """Groups report players (those with a real nba_player_id) by real
+    NBA team, using the same one-year fallback as spike profiles --
+    both ranked and unranked players are checked, since a player who
+    never clears the spike bar can still contribute to a real stack."""
+    by_team = defaultdict(list)
+    for r in report:
+        if r.get("nba_player_id") is None:
+            continue
+        team_id = get_player_team_with_fallback(conn, r["nba_player_id"], season_id)
+        if team_id is not None:
+            by_team[team_id].append(r["player_name"])
+    return {team_id: names for team_id, names in by_team.items() if len(names) >= 2}
+
+
+# =========================
+# Spike profile (identical logic to waiver_wire_finder.py's get_spike_profile)
+# =========================
+
+def get_spike_profile(conn, nba_player_id: int, season_id: str, season_max_games: dict) -> dict | None:
     """
     Queries the real player_tiers view, which already encodes the
     ownable-pool spike threshold (games_played >= 20 AND
@@ -128,24 +235,39 @@ def get_spike_profile(conn, nba_player_id: int, season_id: str) -> dict | None:
     player as a "threat" off many-year-old data (see
     waiver_wire_finder.py's Lonzo Ball case, same underlying issue).
 
+    ALSO returns a real durability % (games_played / that season's max
+    games by any player) -- see module docstring. season_max_games is
+    a dict of {season_id: max_games}, passed in rather than queried
+    per-player.
+
     Returns None if the player clears the bar in neither season.
     """
     fallback_season_id = str(int(season_id) - 1)
 
     cur = conn.cursor()
     cur.execute("""
-        SELECT avg_fantasy_score, stddev_fantasy_score, tier, rank_in_season
-        FROM player_tiers
-        WHERE player_id = %s AND season_id = %s
+        SELECT pt.avg_fantasy_score, pt.stddev_fantasy_score, pt.tier, pt.rank_in_season, gl.games_played
+        FROM player_tiers pt
+        JOIN (
+            SELECT player_id, season_id, COUNT(DISTINCT game_id) AS games_played
+            FROM game_logs
+            GROUP BY player_id, season_id
+        ) gl ON gl.player_id = pt.player_id AND gl.season_id = pt.season_id
+        WHERE pt.player_id = %s AND pt.season_id = %s
     """, (nba_player_id, season_id))
     row = cur.fetchone()
     used_season_id = season_id
 
     if row is None:
         cur.execute("""
-            SELECT avg_fantasy_score, stddev_fantasy_score, tier, rank_in_season
-            FROM player_tiers
-            WHERE player_id = %s AND season_id = %s
+            SELECT pt.avg_fantasy_score, pt.stddev_fantasy_score, pt.tier, pt.rank_in_season, gl.games_played
+            FROM player_tiers pt
+            JOIN (
+                SELECT player_id, season_id, COUNT(DISTINCT game_id) AS games_played
+                FROM game_logs
+                GROUP BY player_id, season_id
+            ) gl ON gl.player_id = pt.player_id AND gl.season_id = pt.season_id
+            WHERE pt.player_id = %s AND pt.season_id = %s
         """, (nba_player_id, fallback_season_id))
         row = cur.fetchone()
         used_season_id = fallback_season_id
@@ -154,9 +276,14 @@ def get_spike_profile(conn, nba_player_id: int, season_id: str) -> dict | None:
     if row is None:
         return None
 
-    avg, stddev, tier, rank_in_season = row
+    avg, stddev, tier, rank_in_season, games_played = row
     avg, stddev = float(avg), float(stddev)
     spike_bar = round(avg + 1.25 * stddev, 2)
+
+    max_games = season_max_games.get(used_season_id)
+    durability_pct = round(games_played / max_games, 3) if max_games else None
+    low_durability = durability_pct is not None and durability_pct < DURABILITY_FLAG_THRESHOLD
+
     return {
         "avg_fantasy_score": avg,
         "stddev_fantasy_score": stddev,
@@ -165,6 +292,9 @@ def get_spike_profile(conn, nba_player_id: int, season_id: str) -> dict | None:
         "spike_bar": spike_bar,
         "profile_season_id": used_season_id,
         "is_fallback_season": used_season_id != season_id,
+        "games_played": games_played,
+        "durability_pct": durability_pct,
+        "low_durability": low_durability,
     }
 
 
@@ -174,12 +304,18 @@ def get_spike_profile(conn, nba_player_id: int, season_id: str) -> dict | None:
 
 def build_report(conn, league_id: str, roster_id: int, season_id: str) -> list[dict]:
     players = get_opponent_players(conn, league_id, roster_id)
+    fallback_season_id = str(int(season_id) - 1)
+    season_max_games = {
+        season_id: get_season_max_games(conn, season_id),
+        fallback_season_id: get_season_max_games(conn, fallback_season_id),
+    }
+
     report = []
     for p in players:
         if p["nba_player_id"] is None:
             report.append({**p, "spike_bar": None, "note": "no crosswalk match -- unmatched Sleeper player"})
             continue
-        profile = get_spike_profile(conn, p["nba_player_id"], season_id)
+        profile = get_spike_profile(conn, p["nba_player_id"], season_id, season_max_games)
         if profile is None:
             report.append({**p, "spike_bar": None, "note": "never clears the spike bar in season_id or the year before"})
             continue
@@ -191,11 +327,11 @@ def build_report(conn, league_id: str, roster_id: int, season_id: str) -> list[d
     return ranked + unranked
 
 
-def print_report(report: list[dict], my_roster_id: int, opp_roster_id: int, week: int):
+def print_report(report: list[dict], my_roster_id: int, opp_roster_id: int, week: int, stacked_groups: dict):
     opp_owner = next((r["owner_name"] for r in report if r["owner_name"]), "Unknown")
     print(f"\nWeek {week}: roster_id {my_roster_id} vs roster_id {opp_roster_id} ({opp_owner})")
-    print(f"{'Player':<24} {'Tier':<8} {'Rank':>5} {'Avg':>7} {'StdDev':>8} {'SpikeBar':>9}  Profile")
-    print("-" * 82)
+    print(f"{'Player':<24} {'Tier':<8} {'Rank':>5} {'Avg':>7} {'StdDev':>8} {'SpikeBar':>9} {'Durability':>11}  Profile")
+    print("-" * 100)
     for r in report:
         if r["spike_bar"] is None:
             print(f"{r['player_name'] or r['sleeper_player_id']:<24} -- {r['note']}")
@@ -203,12 +339,26 @@ def print_report(report: list[dict], my_roster_id: int, opp_roster_id: int, week
         profile_note = f"season {r['profile_season_id']}"
         if r["is_fallback_season"]:
             profile_note += " (fallback)"
+        durability_str = f"{r['durability_pct']*100:.0f}%" if r["durability_pct"] is not None else "n/a"
+        if r["low_durability"]:
+            durability_str += " \u26a0"
         print(f"{r['player_name']:<24} {r['tier']:<8} {r['rank_in_season']:>5} {r['avg_fantasy_score']:>7.2f} "
-              f"{r['stddev_fantasy_score']:>8.2f} {r['spike_bar']:>9.2f}  {profile_note}")
+              f"{r['stddev_fantasy_score']:>8.2f} {r['spike_bar']:>9.2f} {durability_str:>11}  {profile_note}")
     print("\nSpikeBar = avg + 1.25*stddev (players shown already clear the ownable-pool bar of 35).")
     print("This ranks season-long capability, not a prediction for this specific week.")
     print("'(fallback)' = current season has no games yet; using the player's most recent prior season.")
     print("A player missing from this list either never clears the spike bar, or has <20 games that season.")
+    print(f"Durability = games_played / that season's real max games by any player. "
+          f"'\u26a0' = below {DURABILITY_FLAG_THRESHOLD*100:.0f}% -- a real recent games-missed pattern this "
+          f"player's avg_fantasy_score doesn't reflect on its own (see v3.2 Embiid/AD finding).")
+
+    if stacked_groups:
+        print("\nNBA-team stacking on this roster:")
+        for team_id, names in stacked_groups.items():
+            print(f"  {', '.join(names)} (real NBA team_id {team_id})")
+        print("Confirmed real effect: increases this roster's week-to-week VARIANCE (bigger swings both ways),")
+        print("but no confirmed effect on their actual win rate once team quality is controlled for --")
+        print("informational, not a strength or weakness signal on its own.")
 
 
 # =========================
@@ -226,9 +376,10 @@ def main():
     league_id = get_current_league_id(conn)
     opp_roster_id = get_opponent_roster_id(conn, league_id, args.week, args.roster_id)
     report = build_report(conn, league_id, opp_roster_id, args.season_id)
+    stacked_groups = find_stacked_groups(report, conn, args.season_id)
     conn.close()
 
-    print_report(report, args.roster_id, opp_roster_id, args.week)
+    print_report(report, args.roster_id, opp_roster_id, args.week, stacked_groups)
 
 
 if __name__ == "__main__":
