@@ -278,6 +278,93 @@ of problem structurally.)
 
 ---
 
+## Part 4 — Does any of this translate to winning? (built 8/25/26, after the initial doc refactor)
+
+Everything above measures scoring. Nothing checked whether it translates to
+actually winning matchups, or whether team-level risk (variance) is itself
+a real, measurable property of a roster. This part closes that gap.
+
+### Win-correlation: `lock_bar`'s core premise validated
+`analyze_spike_locks_vs_wins.py` -- win/loss from real `sleeper_matchups.
+matchup_id` pairing, "spike" defined as clearing that player's own real
+`lock_bar` (`GREATEST(35, mean + 0.5*stddev)`) that season. Clearing the bar
+correlates with winning at **every** slot, all significant (p<0.05, most
+p<0.001). Center shows the single largest win-rate gap (57.8% vs. 30.8%,
+~27pp) -- strongest slot for the mechanism. Dedicated slots (C/PF/SF/SG)
+show bigger gaps than flex slots (G/F/UTIL), consistent with the
+allocation-order finding from Part 3. PG is the outlier -- smallest gap
+(52.9% vs. 42.0%, ~11pp), no confirmed explanation. Real confound flagged
+honestly: this can't separate "spiking causes wins" from "good rosters do
+both" -- it's correlational, not causal, even though it's exactly the
+pattern a real causal story would produce.
+
+### Fantasy-slot covariance -- a real methodological correction mid-analysis
+`analyze_slot_covariance.py` originally found every pairwise slot
+correlation positive (0.08-0.20) and 51% excess team-week variance beyond
+what independent slots would predict. **User correctly questioned this --
+individual players should be close to independent, so positive correlation
+across every slot pair didn't make sense as a real per-week effect.**
+Root cause found: pooling all 10 rosters together confounded real
+between-team skill differences (some managers just draft better across
+every slot) with genuine within-week co-movement -- a classic panel-data
+trap (pooling heterogeneous groups manufactures correlation that isn't
+real at the level being measured).
+
+**Fix:** demean each slot by its own `(league_id, roster_id)` season mean
+before computing correlation/variance. Result: **the roster-quality
+confound explained about half the original effect.** Raw (confounded):
+correlations 0.08-0.20, 51% excess variance. Demeaned (corrected):
+correlations shrink sharply (mostly 0.02-0.12, SG-C flips to -0.006),
+excess variance drops to **23%** -- still real, not noise, but roughly
+half the original size.
+
+### Residual causes -- all 3 candidate explanations tested
+`analyze_slot_covariance_residual_causes.py` tested every remaining
+hypothesis for the 23% residual:
+- **(1) Shared week-level schedule density** -- two-way (roster + week)
+  fixed-effects demeaning cuts excess variance to **13.6%** (from 23.2%) --
+  ~41% of the residual, the single biggest contributor. Weeks with more
+  total NBA games give every slot more spike chances simultaneously.
+- **(2) Real NBA-team stacking** -- team-weeks with 2+ dedicated-slot
+  players sharing an actual NBA team that season show real, meaningfully
+  higher excess variance (29.3%) than non-stacked team-weeks (19.4%) --
+  confirmed independently, even without removing week effects first.
+- **(3) Time-varying team form** (trailing 4-week rolling demean instead
+  of season-long) -- barely moves the number (23.2% -> 21.6%).
+  **Essentially ruled out** -- mid-season streaks/trades/injury returns
+  aren't doing meaningful work here.
+
+**Net: the residual correlation is genuinely a mix of shared schedule
+opportunity (larger piece) and real NBA-team stacking (smaller but
+confirmed), not team-form streakiness.**
+
+### Stacking roster-construction follow-up -- variance real, win-rate impact is noise
+`analyze_stacking_roster_construction.py` -- the natural next question once
+stacking was confirmed real: does it help or hurt, how many players, which
+positions? Position-pair frequency (descriptive): C-SF stacked most often
+in this league's real rosters (32 team-weeks, 6.9%), then PF-SF (21),
+PF-SG (18), SF-SG (17) -- a fact about this specific league's roster
+patterns, not a general basketball claim.
+
+**Win-rate test hit the exact same confound as the covariance analysis, on
+first pass.** Raw pooled result looked large and "significant" (stacked
+40.1% vs. non-stacked 54.4%, chi2=7.41, p=0.0065) -- but this is the same
+between-team-skill trap. **Corrected** via a within-roster paired
+comparison (each roster's own stacked-week win rate vs. that same roster's
+non-stacked-week win rate, Wilcoxon signed-rank across 18 qualifying
+roster-seasons): mean diff **-3.7%, p=0.4171 -- noise.** Per-roster
+differences scattered with no consistent direction (one roster/season:
++33.3%; another: -41.2%) -- the signature of confound-driven noise, not a
+real effect.
+
+**Final conclusion: stacking real-NBA-team players increases weekly
+volatility (real, confirmed, survives controls) but shows no real evidence
+of helping or hurting win rate once team quality is properly controlled
+for.** Worth treating as a real property of stacked rosters, not a
+strategic mistake to avoid.
+
+---
+
 ## Practical guidance (final, both analyses combined)
 
 - **Trade/keeper valuation:** don't pay a position premium for "elite
@@ -301,5 +388,16 @@ of problem structurally.)
   elite" correlates with usage-rate concentration (a plausible
   explanation for the eligibility-count finding) was never checked
   against usage data — a hypothesis, not a confirmed mechanism.
+- **`lock_bar` itself is validated**, not just the position findings
+  built on top of it: clearing your own spike bar correlates with
+  winning at every slot, real and significant. The whole formula's
+  core premise holds up against real matchup outcomes.
+- **Stacking multiple players from the same real NBA team increases
+  your weekly variance (both boom and bust) but doesn't reliably help
+  or hurt your win rate.** Not a strategy to chase or avoid on
+  competitive grounds — a real property of your roster's volatility
+  profile, useful to know if you're trying to manage risk (e.g.
+  protecting a lead in standings vs. needing upside as an underdog),
+  not a lever for winning more on its own.
 - **Not yet built:** none of this is wired into `waiver_wire_finder.py`
   / `opponent_scout.py` — findings delivered as analysis only.
