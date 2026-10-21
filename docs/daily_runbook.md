@@ -108,6 +108,16 @@ If a step times out or the terminal hangs, set a query limit first:
       `python scripts/waiver_wire_finder.py --season-id 22026 --limit 10`
       Rookies won't appear: player_tiers needs 20 games, and the one-year
       fallback has no history for them. That is expected.
+   c2. Bid advisor (FAAB price and competition read on the waiver finder's targets):
+      `python scripts/waiver_bid_advisor.py --season-id 22026 --limit 10`
+      Shows, per free agent, what that tier has cost historically, which
+      rivals are "big bidders" (>= 20% of their wins at $10+, at least 3
+      such wins) and still have $10+ left, and a suggested bid range. The
+      rivals table at the bottom shows why. A heuristic, not a forecast;
+      it does not yet consider rival positional need.
+   c3. FAAB balances: `psql -d postgres -c "SELECT roster_id, owner_name, budget, budget_used, remaining, other_budget_movement FROM sleeper_faab_balance WHERE season = '2026' ORDER BY roster_id"`
+      `remaining` should match the Sleeper app. A nonzero
+      `other_budget_movement` means FAAB was traded or a bid is not stored.
    d. Matchup analysis (your roster_id is 8):
       `python scripts/opponent_scout.py 8 --week 1 --season-id 22026`  (8 = sweetdiddlydee; also set as MY_ROSTER_ID in scripts/run_daily.py)
       Unmatched rookies show "no crosswalk match" until step 8 resolves them.
@@ -160,6 +170,18 @@ Run it AFTER the last West Coast game has finished (morning is fine).
 - Rookies and the lock signal. A rookie has no tier until he has a prior
   season (or 100 players are ranked this year), so he gets no LOCK/HOLD call
   and does not appear in the pool. Open design question.
+- FAAB. `sleeper_transactions.waiver_bid` holds each claim's bid (from
+  Sleeper's settings.waiver_bid; backfilled for 2024-2026 on 10/21/26 with
+  `scripts/sleeper/backfill_waiver_bids.py`, and kept current by the daily
+  sync). `sleeper_faab_balance` gives budget, used and remaining per roster
+  from Sleeper's own `waiver_budget_used` (which also reflects FAAB traded
+  between teams). Bids are small in this league: winning bids average $1-5,
+  and only Yaak0v, cocohebbles and Pete1771 bid $10+ often (about a third of
+  their wins). Streamers (sweetdiddlydee, Crash374, Folger11) used up
+  nearly the whole $100 on $1 claims in 2025.
+- Failed waiver claims are in the table, but the reason they failed
+  (outbid, player already taken, roster full) is not stored, so a failed
+  bid is not necessarily a losing offer.
 - Game logs for a new rookie fail until the player exists in `nba_players`
   (see step 6). Expect this most nights early in the season.
 

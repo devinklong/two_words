@@ -19,7 +19,8 @@ Steps, in order (the ORDER MATTERS -- see docs/daily_runbook.md):
   7. build_sleeper_player_crosswalk.py     (only if rostered players still lack an nba_player_id)
   8. run_daily_sync.py                     (rosters, matchups, transactions, points snapshots)
   9. verify_current_league_independently.py --week W
- 10. lock-signal check, waiver_wire_finder and opponent_scout (roster MY_ROSTER_ID) smoke tests (output goes to the log)
+ 10. lock-signal check, FAAB balances, waiver_wire_finder, waiver_bid_advisor and opponent_scout
+     (roster MY_ROSTER_ID) smoke tests (output goes to the log)
  11. season_opener_preflight.py --week W
 
 <date> defaults to YESTERDAY in America/Chicago: run this in the morning
@@ -101,7 +102,10 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         ("independent verify", [PY, "scripts/verify_current_league_independently.py", *wk], False),
         ("lock signal check (in log)", [*psql, "-c", "SELECT player_stats_source, lock_signal, COUNT(*) FROM game_lock_signal "
                                         f"WHERE season_id = '{season_id}' GROUP BY 1,2 ORDER BY 1,2"], False),
+        ("faab balances (in log)", [*psql, "-c", "SELECT roster_id, owner_name, budget, budget_used, remaining, other_budget_movement "
+                                    f"FROM sleeper_faab_balance WHERE season = '{str(season_id)[1:]}' ORDER BY roster_id"], False),
         ("waiver finder smoke (in log)", [PY, "scripts/waiver_wire_finder.py", "--season-id", str(season_id), "--limit", "5"], False),
+        ("bid advisor smoke (in log)", [PY, "scripts/waiver_bid_advisor.py", "--season-id", str(season_id), "--limit", "5"], False),
         ("opponent scout smoke (in log)", [PY, "scripts/opponent_scout.py", str(MY_ROSTER_ID), *wk, "--season-id", str(season_id)], False),
         ("preflight", [PY, "scripts/season_opener_preflight.py", *wk], False),
     ]
