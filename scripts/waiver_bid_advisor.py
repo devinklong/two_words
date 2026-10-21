@@ -28,9 +28,16 @@ How the suggestion is made (a transparent heuristic, not a model):
      Capped at your remaining budget, and at (richest rival's remaining + 1),
      because nobody can bid more than they have left.
   A tier with fewer than --min-sample past claims is marked 'thin': read it as a hint.
+  4. FIT (added 10/21/26): for every team, the best 9-man lineup (PG, SG, G, SF, PF, F, C,
+     UTIL, UTIL; scripts/lineup_fit.py) is solved with and without the free agent. The
+     difference is how many fantasy points per game he adds to that team ("You +" is
+     yours). Player values are each player's season average fantasy score (current season
+     once 20 games, else the latest season, like the finder). A big bidder only counts as
+     contesting a player when the player would add at least --min-upgrade points to
+     that team's lineup. Pass --no-fit to skip this.
 Limits: three seasons of bids; offseason/preseason bidding differs from in-season;
-rival positional need and roster limits are NOT considered yet; ties on priority
-are not modeled.
+roster limits (who a rival would have to drop) are NOT considered; ties on priority
+are not modeled; rookies without stats count as 0 in a lineup.
 
 Run (from project root):
     python scripts/waiver_bid_advisor.py --season-id 22026 --limit 10
@@ -98,6 +105,52 @@ ORDER BY f.roster_id
 """
 
 
+ROSTERS_SQL = """
+SELECT roster_id, owner_name, sleeper_player_id, nba_player_id, player_name
+FROM roster_ownership
+WHERE league_id = %(league)s
+"""
+
+POSITIONS_SQL = """
+SELECT sleeper_player_id, array_agg(position) FROM sleeper_player_fantasy_positions GROUP BY 1
+"""
+
+# Current-season average once the player has 20 games, otherwise the latest season on record.
+VALUES_SQL = """
+SELECT DISTINCT ON (player_id) player_id, avg_fantasy_score
+FROM player_season_fantasy_stats
+WHERE season_id IN (%(cur)s, %(prev)s)
+ORDER BY player_id, (season_id = %(cur)s AND games_played >= 20) DESC, season_id DESC
+"""
+
+
+def fetch_fit_inputs(conn, league_id, season_id):
+    """Returns (rosters, positions): rosters = {roster_id: [(value, positions), ...]}."""
+    from lineup_fit import KNOWN_POSITIONS
+    cur = conn.cursor()
+    cur.execute(POSITIONS_SQL)
+    positions = {r[0]: list(r[1]) for r in cur.fetchall()}
+    unknown = {p for ps in positions.values() for p in ps} - KNOWN_POSITIONS
+    if unknown:
+        print(f"WARNING: unrecognized fantasy positions {sorted(unknown)}; those can only fill UTIL.")
+    cur.execute(VALUES_SQL, {"cur": season_id, "prev": str(int(season_id) - 1)})
+    values = {r[0]: float(r[1]) for r in cur.fetchall() if r[1] is not None}
+    cur.execute(ROSTERS_SQL, {"league": league_id})
+    rosters = {}
+    for roster_id, _owner, sid, nba_id, _name in cur.fetchall():
+        rosters.setdefault(roster_id, []).append((values.get(nba_id, 0.0), positions.get(sid, [])))
+    cur.close()
+    return rosters, positions
+
+
+def compute_gains(rosters, positions, target):
+    """{roster_id: points per game the target adds to that team's best lineup}."""
+    from lineup_fit import best_lineup_value, lineup_gain
+    cand = (float(target["avg_fantasy_score"]), positions.get(target["sleeper_player_id"], []))
+    return {rid: lineup_gain(players, cand, base_value=best_lineup_value(players))
+            for rid, players in rosters.items()}
+
+
 def fetch_class_stats(conn):
     cur = conn.cursor()
     cur.execute(CLASS_STATS_SQL)
@@ -121,7 +174,8 @@ def is_big_bidder(r, min_big_wins, min_big_share):
     return r["wins"] > 0 and r["big_wins"] >= min_big_wins and r["big_wins"] / r["wins"] >= min_big_share
 
 
-def suggest(stats, rivals, my_roster_id, big_bid, min_big_wins, min_big_share, min_sample):
+def suggest(stats, rivals, my_roster_id, big_bid, min_big_wins, min_big_share, min_sample,
+            gains=None, min_upgrade=0.0):
     """Pure function: returns a dict describing the read for one tier's stats (or None) given rivals."""
     me = next((r for r in rivals if r["roster_id"] == my_roster_id), None)
     others = [r for r in rivals if r["roster_id"] != my_roster_id]
@@ -129,9 +183,11 @@ def suggest(stats, rivals, my_roster_id, big_bid, min_big_wins, min_big_share, m
     known = [r["remaining"] for r in others if r["remaining"] is not None]
     richest = max(known) if known else None
 
+    # with gains: a big bidder contests only if the player would actually upgrade that team
     big_bidders = [r["owner"] for r in others
                    if is_big_bidder(r, min_big_wins, min_big_share)
-                   and r["remaining"] is not None and r["remaining"] >= big_bid]
+                   and r["remaining"] is not None and r["remaining"] >= big_bid
+                   and (gains is None or gains.get(r["roster_id"], 0.0) >= min_upgrade)]
     contested = bool(big_bidders)
 
     if stats is None:
@@ -157,30 +213,44 @@ def suggest(stats, rivals, my_roster_id, big_bid, min_big_wins, min_big_share, m
             "my_remaining": my_remaining}
 
 
-def print_advice(rows, class_stats, args):
+def print_advice(rows, rivals, args, fit):
+    first = rows[0][2]
     print(f"\nWaiver bid advisor ({len(rows)} free agents shown). Your budget left: "
-          f"{rows[0][2]['my_remaining'] if rows and rows[0][2]['my_remaining'] is not None else 'unknown'}"
-          f"; richest rival: {rows[0][2]['richest'] if rows and rows[0][2]['richest'] is not None else 'unknown'}")
-    print(f"{'Player':<24} {'Tier':<8} {'SpikeBar':>8} {'Past n':>6} {'Med':>5} {'P90':>5} {'Max':>5}  {'Suggest':>9}  Competition")
-    print("-" * 110)
-    for r, st, s in rows:
+          f"{first['my_remaining'] if first['my_remaining'] is not None else 'unknown'}"
+          f"; richest rival: {first['richest'] if first['richest'] is not None else 'unknown'}")
+    head = f"{'Player':<22} {'Tier':<8} {'SpikeBar':>8} {'Past n':>6} {'Med':>4} {'P90':>4} {'Max':>4}  {'Suggest':>10}"
+    if fit:
+        head += f" {'You +':>6}  {'Rivals who gain most':<34}"
+    print(head + "  Competition")
+    print("-" * (150 if fit else 112))
+    names = {r["roster_id"]: r["owner"] for r in rivals}
+    for r, st, s, gains in rows:
         if st is None:
-            price = f"{'-':>6} {'-':>5} {'-':>5} {'-':>5}"
+            price = f"{'-':>6} {'-':>4} {'-':>4} {'-':>4}"
             sug = "no history"
         else:
-            price = f"{st['n']:>6} {st['median']:>5.0f} {st['p90']:>5.0f} {st['max']:>5}"
-            sug = f"${s['low']}-${s['high']}"
-            if s["thin"]:
-                sug += " (thin)"
+            price = f"{st['n']:>6} {st['median']:>4.0f} {st['p90']:>4.0f} {st['max']:>4}"
+            sug = f"${s['low']}-${s['high']}" + (" (thin)" if s["thin"] else "")
+        line = f"{r['player_name']:<22} {r['tier']:<8} {r['spike_bar']:>8.2f} {price}  {sug:>10}"
+        if fit:
+            mine = gains.get(args.my_roster_id, 0.0)
+            top = sorted(((g, rid) for rid, g in gains.items() if rid != args.my_roster_id and g >= args.min_upgrade),
+                         reverse=True)[:3]
+            wants = ", ".join(f"{names.get(rid, rid)} +{g:.1f}" for g, rid in top) or "-"
+            line += f" {mine:>+6.1f}  {wants:<34}"
         comp = ("contested: " + ", ".join(s["big_bidders"])) if s["contested"] else "uncontested"
         if s["capped_by"]:
             comp += f"  [capped by {s['capped_by']}]"
-        print(f"{r['player_name']:<24} {r['tier']:<8} {r['spike_bar']:>8.2f} {price}  {sug:>9}  {comp}")
+        print(line + "  " + comp)
     print(f"\nContested = a big bidder (>= {args.min_big_share*100:.0f}% of their wins at ${args.big_bid}+, at least "
-          f"{args.min_big_wins} such wins) who still has ${args.big_bid}+ left.")
+          f"{args.min_big_wins} such wins) who still has ${args.big_bid}+ left"
+          + (f" and whom the player would add {args.min_upgrade:g}+ points per game to." if fit else "."))
     print("Suggest: uncontested = median..75th pct of past winning bids for that tier; contested = 75th..90th pct;")
     print("capped at your budget and at (richest rival's remaining + 1). 'thin' = fewer than "
           f"{args.min_sample} past claims in that tier. Heuristic, not a forecast.")
+    if fit:
+        print("You + / Rivals: fantasy points per game the player adds to that team's best 9-man lineup "
+              "(season averages; a rookie with no stats counts as 0).")
 
 
 def print_rivals(rivals, args):
@@ -205,6 +275,8 @@ def main():
     ap.add_argument("--min-big-wins", type=int, default=3, help="big wins needed to call a rival a big bidder (default 3)")
     ap.add_argument("--min-big-share", type=float, default=0.20, help="share of a rival's wins that must be big bids (default 0.20)")
     ap.add_argument("--min-sample", type=int, default=5, help="past claims in a tier before it is not 'thin' (default 5)")
+    ap.add_argument("--min-upgrade", type=float, default=2.0, help="lineup points per game a player must add to a big bidder to count as contested (default 2.0)")
+    ap.add_argument("--no-fit", action="store_true", help="skip the lineup-fit calculation")
     args = ap.parse_args()
 
     from db_connection import get_connection
@@ -222,13 +294,21 @@ def main():
             return
         class_stats = fetch_class_stats(conn)
         rivals = fetch_rivals(conn, league_id, args.big_bid)
+        fit = not args.no_fit
+        rosters = positions = None
+        if fit:
+            rosters, positions = fetch_fit_inputs(conn, league_id, args.season_id)
     finally:
         conn.close()
 
-    rows = [(r, class_stats.get(r["tier"]),
-             suggest(class_stats.get(r["tier"]), rivals, args.my_roster_id, args.big_bid, args.min_big_wins, args.min_big_share, args.min_sample))
-            for r in report]
-    print_advice(rows, class_stats, args)
+    rows = []
+    for r in report:
+        gains = compute_gains(rosters, positions, r) if fit else {}
+        st = class_stats.get(r["tier"])
+        s = suggest(st, rivals, args.my_roster_id, args.big_bid, args.min_big_wins, args.min_big_share, args.min_sample,
+                    gains=gains if fit else None, min_upgrade=args.min_upgrade)
+        rows.append((r, st, s, gains))
+    print_advice(rows, rivals, args, fit)
     print_rivals(rivals, args)
 
 
