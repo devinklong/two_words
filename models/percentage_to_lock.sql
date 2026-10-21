@@ -61,7 +61,7 @@ SELECT
     -- which deliberately uses the RAW count (a game doesn't disappear).
     ROUND(1 - hold_win_probability_by_tier(gfsw.effective_games_remaining_in_week, pt.tier), 4) AS percentage_to_lock
 FROM game_fantasy_scores_weekly_effective gfsw
-JOIN player_tiers pt
+JOIN nba_player_tiers_in_use pt
     ON pt.player_id = gfsw.player_id AND pt.season_id = gfsw.season_id;
 
 -- =========================
