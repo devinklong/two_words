@@ -3,6 +3,9 @@
 Written 10/20/26, the 2026-27 season opener. Run from the project root.
 `scripts/run_daily.py` does steps 2-11 in one command; this doc is the
 manual version with checkpoints, for the first run(s) and for debugging.
+If a step times out or the terminal hangs, set a query limit first:
+`export PGOPTIONS='-c statement_timeout=20000'`, and use `psql -P pager=off`
+(or put `\pset pager off` in ~/.psqlrc) so output never waits in a pager.
 
 ## Why the order matters
 
@@ -32,10 +35,17 @@ manual version with checkpoints, for the first run(s) and for debugging.
    The daily loader only ever returns games ALREADY PLAYED (verified
    10/21/26: a future date range inserted 0 rows). The season loader pulls
    the full regular-season schedule from nba_api ScheduleLeagueV2 and
-   inserts upcoming games with NULL results. It refuses to write unless it
-   finds 1230 games and 82 per team. Idempotent; safe to rerun daily
-   (picks up postponements for unplayed games only).
-   CHECK: 22026 now has 2460 rows and runs through April:
+   inserts upcoming games with NULL results. Idempotent; safe to rerun daily
+   (picks up postponements for unplayed games only, and any games the NBA
+   has published since the last run).
+   As of 10/21/26 the NBA has published only 80 of 82 games per team (1200
+   games): the Emirates NBA Cup knockout games are not scheduled until group
+   play ends in late November. The loader skips the TBD placeholder games
+   (team id 0), prints how many games are still unscheduled, and its gate
+   accepts 78-82 games per team as long as all 30 teams have the SAME count.
+   Anything else (uneven counts, missing teams) it refuses to write.
+   CHECK: 22026 has 2400 rows (2460 once the schedule is complete) and runs
+   through 2027-04-11:
    `psql -d postgres -c "SELECT season_id, MIN(game_date), MAX(game_date), COUNT(*), COUNT(wl) AS played FROM team_schedule GROUP BY 1 ORDER BY 1"`
    If the loader's column auto-detection fails it prints the columns and
    exits without writing; run `--inspect` and send the output.
@@ -54,9 +64,15 @@ manual version with checkpoints, for the first run(s) and for debugging.
 
 6. Game logs for 10/20 (chains the weekly-effective sync and injuries)
    `python scripts/ingestion/load_daily_game_logs.py 2026-10-20`
-   If it fails on a foreign key naming a player_id: that rookie isn't in
-   `nba_players`. Check `sed -n 1,30p scripts/ingestion/backfill_single_player.py`
-   for its arguments, backfill that player, then rerun this step.
+   The loader exits 0 even when a game fails, so read its output for
+   "game(s) failed". A failure on a foreign key naming a player_id means that
+   rookie isn't in `nba_players` yet (nba_api's static list lags behind
+   debuts). `run_daily.py` handles this itself: it adds the player with
+   `scripts/ingestion/add_player_by_id.py` and reloads, up to 5 rounds (one
+   game can hide several rookies; the insert stops at the first). By hand:
+   `PYTHONPATH=scripts python scripts/ingestion/add_player_by_id.py ID [ID ...]`
+   then rerun this step. (`backfill_single_player.py "Full Name" 2026-27`
+   is for backfilling a player's whole season, not for this.)
    CHECKS:
    `psql -d postgres -c "SELECT COUNT(DISTINCT game_id), COUNT(*) FROM game_logs WHERE season_id = '22026'"`
    `psql -d postgres -c "SELECT COUNT(*) FROM game_fantasy_scores_weekly_effective WHERE season_id = '22026'"`
@@ -81,8 +97,11 @@ manual version with checkpoints, for the first run(s) and for debugging.
 10. Decision tools (each should run and show sensible output)
    a. Lock signal on 2026 games and which baseline it used:
       `psql -d postgres -c "SELECT player_stats_source, lock_signal, COUNT(*) FROM game_lock_signal WHERE season_id = '22026' GROUP BY 1,2 ORDER BY 1,2"`
-      Expect a fallback (prior-season) source, not zero rows. Zero rows
-      means the bootstrap isn't covering week 1: stop and ask.
+      Expect rows with source `rolling` (last 20 games across two seasons),
+      about 29 after the opener, not zero. Only players with a pool row AND a
+      tier get a signal; rookies and players under 20 games / below the 35
+      bar last season get none (by design). Zero rows means the tiers or
+      pool chain is empty: see "Tiers borrow rule" below.
    b. Lock calculator on a real 10/20 game (pick a player/game_id from game_logs):
       `python scripts/lock_decision_input.py PLAYER_ID --game-id GAME_ID --season-id 22026 --game-date 2026-10-20`
    c. Waiver wire:
@@ -118,6 +137,32 @@ Run it AFTER the last West Coast game has finished (morning is fine).
 - `models/percentage_to_lock.sql` wipes `hold_value_curve_params_by_tier`;
   rerun `scripts/fit_hold_value_curve_by_tier.py` after it.
 
+## Known behaviors (learned 10/21/26)
+
+- Tiers borrow rule. `player_tiers` ranks a season from players with >= 20
+  games, so a season in progress has none and the lock chain used to return
+  0 rows. The chain now reads `nba_player_tiers_in_use`
+  (`schema/views/nba_player_tiers_in_use.sql`): finished seasons use their own
+  tiers; the current season borrows the latest earlier season's tiers until
+  100 players are ranked, then switches to its own. The cutover is the
+  `< 100` in that file (an assumption; finished seasons rank 155-169).
+  `tier_source_season_id` shows which season a tier came from. If the chain
+  ever returns 0 rows for the current season again, check
+  `SELECT season_id, COUNT(*) FROM nba_player_tiers_in_use GROUP BY 1`.
+- Weekly-effective rows are never updated. They copy games-remaining counts
+  at insert time. Weeks that contain not-yet-published games (the Cup
+  knockout round: weeks of Nov 30 and Dec 7, plus the unscheduled 24 games
+  afterward) will undercount remaining games until the schedule is complete.
+  Once the NBA publishes them and the loader has run, delete and resync the
+  affected rows:
+  `psql -d postgres -c "DELETE FROM game_fantasy_scores_weekly_effective WHERE season_id = '22026' AND game_date >= '2026-11-30'"`
+  then `python scripts/sync_game_fantasy_scores_weekly_effective.py`.
+- Rookies and the lock signal. A rookie has no tier until he has a prior
+  season (or 100 players are ranked this year), so he gets no LOCK/HOLD call
+  and does not appear in the pool. Open design question.
+- Game logs for a new rookie fail until the player exists in `nba_players`
+  (see step 6). Expect this most nights early in the season.
+
 ## Weekly / occasional
 
 - Weekly: spot-check Sleeper points against the app once real scores exist.
@@ -135,6 +180,7 @@ Run it AFTER the last West Coast game has finished (morning is fine).
   generic gets an `nba_` or `eredivisie_` prefix until the projects are
   split into separate schemas/databases.
 - Add the shared-database collision to docs/architecture_risks.md.
+- `models/percentage_to_lock.sql`: its tiers join was changed to `nba_player_tiers_in_use` (10/21/26); keep it that way.
 - Remove CASCADE from view files; fix stale `players.full_name` joins in
   roster_ownership_view.sql and transactions_view.sql.
 - Rename `teams` -> `nba_teams`.
