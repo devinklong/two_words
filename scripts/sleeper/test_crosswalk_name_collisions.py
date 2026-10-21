@@ -43,7 +43,7 @@ def get_pre_2026_players(cur):
     draws from for prior seasons."""
     cur.execute("""
         SELECT DISTINCT p.player_id, p.full_name
-        FROM players p
+        FROM nba_players p
         JOIN game_logs gl ON gl.player_id = p.player_id
         WHERE gl.season_id < '22026'
     """)

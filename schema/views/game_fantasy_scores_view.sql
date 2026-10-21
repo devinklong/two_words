@@ -179,14 +179,14 @@ SELECT COUNT(*) FROM game_logs;
 SELECT p.full_name, gfs.game_date, gfs.pts, gfs.reb, gfs.ast, gfs.stl, gfs.blk,
        gfs.is_double_double, gfs.is_triple_double, gfs.fantasy_score
 FROM game_fantasy_scores gfs
-JOIN players p ON p.player_id = gfs.player_id
+JOIN nba_players p ON p.player_id = gfs.player_id
 WHERE p.full_name ILIKE '%joki%' AND gfs.game_date = '2025-03-07';
 
 -- New: the two directly-confirmed technical-foul test cases from this
 -- session should compute EXACTLY the real Sleeper values now
 SELECT p.full_name, gfs.game_id, gfs.game_date, gfs.technical_fouls, gfs.flagrant_fouls, gfs.fantasy_score
 FROM game_fantasy_scores gfs
-JOIN players p ON p.player_id = gfs.player_id
+JOIN nba_players p ON p.player_id = gfs.player_id
 WHERE gfs.game_id = '0022400064' AND p.full_name ILIKE '%cam thomas%';
 
 -- Sanity check the overall distribution — min/max/avg fantasy score
@@ -202,6 +202,6 @@ FROM game_fantasy_scores;
 -- plausibility (should be recognizable statlines, not obviously broken)
 SELECT p.full_name, gfs.game_date, gfs.pts, gfs.reb, gfs.ast, gfs.fantasy_score
 FROM game_fantasy_scores gfs
-JOIN players p ON p.player_id = gfs.player_id
+JOIN nba_players p ON p.player_id = gfs.player_id
 ORDER BY gfs.fantasy_score DESC
 LIMIT 10;

@@ -198,7 +198,7 @@ SEASON_MAX_GAMES_QUERY = """
 """
 
 PLAYER_NAME_QUERY = """
-    SELECT player_id, full_name FROM players WHERE full_name ILIKE %s ORDER BY full_name;
+    SELECT player_id, full_name FROM nba_players WHERE full_name ILIKE %s ORDER BY full_name;
 """
 
 

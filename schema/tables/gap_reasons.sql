@@ -1,7 +1,7 @@
 DROP TABLE IF EXISTS gap_reasons;
 
 CREATE TABLE gap_reasons (
-    player_id    INTEGER      NOT NULL REFERENCES players(player_id),
+    player_id    INTEGER      NOT NULL REFERENCES nba_players(player_id),
     team_id      INTEGER      NOT NULL REFERENCES teams(team_id),
     game_id      VARCHAR(20)  NOT NULL,
     game_date    DATE         NOT NULL,
@@ -23,7 +23,7 @@ SELECT is_explained, COUNT(*) FROM gap_reasons GROUP BY is_explained;
 -- Raynaud's gaps came back "NOT on injury report (likely coach's decision)"
 SELECT gr.*
 FROM gap_reasons gr
-JOIN players p ON p.player_id = gr.player_id
+JOIN nba_players p ON p.player_id = gr.player_id
 WHERE p.full_name ILIKE '%raynaud%'
 ORDER BY gr.game_date;
 

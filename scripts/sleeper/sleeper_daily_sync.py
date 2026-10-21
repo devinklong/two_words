@@ -2,9 +2,12 @@
 scripts/sleeper_daily_sync.py
 
 Core sync logic for keeping Sleeper data current during a live season --
-NOT a full backfill. Determines which week a given date falls in (reusing
-the already-validated week_start_date/week_end_date boundaries from
-game_fantasy_scores_weekly_effective) and syncs only that week's matchups
+NOT a full backfill. Determines which week a given date falls in (using the
+week_start_date/week_end_date boundaries in fantasy_weeks -- CHANGED
+10/20/26: this used to read game_fantasy_scores_weekly_effective, which
+has no rows for a season until a game has actually been played, so the
+sync found no week and skipped everything, including the roster refresh,
+on opening night) and syncs only that week's matchups
 and recent transactions, plus a full roster refresh (rosters are small
 and change any day, so always refreshing them in full is cheap and safe).
 Also captures a CHANGE-LOG snapshot of Sleeper's own points into
@@ -14,9 +17,9 @@ storing Sleeper's own scoring. This function never touches
 sleeper_matchups, game_logs, or any scoring-formula table -- it only
 reads from Sleeper's API and writes to its own standalone table.
 
-No runner/scheduler decided yet -- this is importable logic, callable
-manually, from a script, or wired to cron later without changing how it
-works. Can't be end-to-end validated against real daily activity until
+Command-line entry point: scripts/sleeper/run_daily_sync.py (added
+10/20/26). This module is importable logic, callable manually, from a
+script, or wired to cron later without changing how it works. Can't be end-to-end validated against real daily activity until
 a season is actually live; get_current_week() IS testable now against
 historical 2024/2025 dates, since those boundaries are already proven.
 """
@@ -40,7 +43,7 @@ def get_current_week(cur, season_id, as_of_date=None):
         as_of_date = date.today()
 
     cur.execute("""
-        SELECT week_number FROM game_fantasy_scores_weekly_effective
+        SELECT week_number FROM fantasy_weeks
         WHERE season_id = %s AND %s BETWEEN week_start_date AND week_end_date
         LIMIT 1;
     """, (season_id, as_of_date))

@@ -24,7 +24,7 @@
 -- regardless of whether it produced any foul rows.
 
 CREATE TABLE IF NOT EXISTS player_technical_flagrant_fouls (
-    player_id       INTEGER NOT NULL REFERENCES players(player_id),
+    player_id       INTEGER NOT NULL REFERENCES nba_players(player_id),
     game_id         VARCHAR(20) NOT NULL,
     technical_fouls INTEGER NOT NULL DEFAULT 0,
     flagrant_fouls  INTEGER NOT NULL DEFAULT 0,

@@ -53,7 +53,7 @@ LEFT JOIN sleeper_users su
 CROSS JOIN LATERAL unnest(sr.players) AS sleeper_pid
 LEFT JOIN sleeper_player_crosswalk spc
     ON spc.sleeper_player_id = sleeper_pid
-LEFT JOIN players p
+LEFT JOIN nba_players p
     ON p.player_id = spc.nba_player_id;
 
 -- =========================

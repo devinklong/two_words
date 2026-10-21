@@ -68,7 +68,7 @@ LEFT JOIN game_fantasy_scores_weekly gfsw
     ON gfsw.player_id = spc.nba_player_id
    AND gfsw.season_id = ('2' || sl.season)
    AND gfsw.week_number = sm.week
-LEFT JOIN players p
+LEFT JOIN nba_players p
     ON p.player_id = spc.nba_player_id
 WHERE sp != '0';  -- Sleeper's placeholder for an empty starter slot,
                    -- not a real player_id -- confirmed 8/13/26 this

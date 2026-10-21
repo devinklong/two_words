@@ -49,5 +49,5 @@ SELECT lock_bar(50.0, 20.0, 40, 0.75) AS custom_params_case;
 -- confirmed in game_lock_signal.sql's own verification block)
 SELECT p.full_name, lock_bar(pss.avg_fantasy_score, pss.stddev_fantasy_score) AS computed_lock_bar
 FROM player_season_fantasy_stats pss
-JOIN players p ON p.player_id = pss.player_id
+JOIN nba_players p ON p.player_id = pss.player_id
 WHERE p.full_name ILIKE '%joki%' AND pss.season_id = '22024';

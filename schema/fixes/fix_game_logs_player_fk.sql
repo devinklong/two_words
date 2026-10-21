@@ -25,7 +25,7 @@ BEGIN
     ) THEN
         ALTER TABLE game_logs
         ADD CONSTRAINT game_logs_player_id_fkey
-        FOREIGN KEY (player_id) REFERENCES players(player_id);
+        FOREIGN KEY (player_id) REFERENCES nba_players(player_id);
     END IF;
 END $$;
 

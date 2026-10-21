@@ -28,7 +28,7 @@ SELECT
     ROUND(MAX(gfs.fantasy_score), 2) AS max_fantasy_score,
     ROUND(AVG(gfs.fantasy_score) + STDDEV_SAMP(gfs.fantasy_score), 2) AS mean_plus_1sd
 FROM game_fantasy_scores gfs
-JOIN players p ON p.player_id = gfs.player_id
+JOIN nba_players p ON p.player_id = gfs.player_id
 GROUP BY gfs.player_id, p.full_name, gfs.season_id;
 
 -- =========================

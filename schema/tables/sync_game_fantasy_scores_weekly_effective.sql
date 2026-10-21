@@ -16,13 +16,43 @@
 -- Safe to run as often as needed -- a run with nothing new to catch up
 -- on is just a fast no-op (the anti-join returns zero rows).
 --
+-- FIXED 10/20/26: the INSERT used to be positional (SELECT gfsw.*), which
+-- broke when v3.1's foul-penalty fix (8/23/26) added technical_fouls and
+-- flagrant_fouls to the underlying view: "INSERT has more expressions
+-- than target columns". Latent until the first sync after the offseason.
+-- Column list is now explicit on both sides, so adding a column to the
+-- view can never again silently misalign this insert. technical_fouls /
+-- flagrant_fouls are deliberately NOT stored here -- fantasy_score
+-- already includes their penalty and nothing reads them from this table.
+-- If a future column is added to the table, add it to BOTH lists below.
+--
 -- Run standalone:
---   psql -h 127.0.0.1 -U devinlong -d postgres -f schema/sync_game_fantasy_scores_weekly_effective.sql
+--   psql -h 127.0.0.1 -U devinlong -d postgres -f schema/tables/sync_game_fantasy_scores_weekly_effective.sql
 -- Also chained automatically at the end of load_daily_game_logs.py.
 
-INSERT INTO game_fantasy_scores_weekly_effective
+INSERT INTO game_fantasy_scores_weekly_effective (
+    game_id, player_id, team_id, opponent_team_id, season_id, game_date,
+    is_home, wl, minutes, pts, reb, oreb, dreb, ast, stl, blk, tov,
+    fgm, fga, ftm, fta, fg3m, fg3a, plus_minus,
+    double_digit_categories, is_double_double, is_triple_double,
+    fantasy_score, week_number, week_start_date, week_end_date,
+    is_playoff_week, games_before_in_week, games_remaining_in_week,
+    total_team_games_this_week, is_last_game_of_week,
+    effective_games_remaining_in_week
+)
 SELECT
-    gfsw.*,
+    gfsw.game_id, gfsw.player_id, gfsw.team_id, gfsw.opponent_team_id,
+    gfsw.season_id, gfsw.game_date,
+    gfsw.is_home, gfsw.wl, gfsw.minutes, gfsw.pts, gfsw.reb, gfsw.oreb,
+    gfsw.dreb, gfsw.ast, gfsw.stl, gfsw.blk, gfsw.tov,
+    gfsw.fgm, gfsw.fga, gfsw.ftm, gfsw.fta, gfsw.fg3m, gfsw.fg3a,
+    gfsw.plus_minus,
+    gfsw.double_digit_categories, gfsw.is_double_double, gfsw.is_triple_double,
+    gfsw.fantasy_score, gfsw.week_number, gfsw.week_start_date,
+    gfsw.week_end_date,
+    gfsw.is_playoff_week, gfsw.games_before_in_week,
+    gfsw.games_remaining_in_week,
+    gfsw.total_team_games_this_week, gfsw.is_last_game_of_week,
     (
         SELECT COALESCE(ROUND(SUM(
             CASE WHEN b2b.is_second_night_of_b2b THEN 0.9805 ELSE 1.0 END

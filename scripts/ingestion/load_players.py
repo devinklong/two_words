@@ -28,7 +28,7 @@ def load_players(df: pd.DataFrame) -> None:
     execute_values(
         cur,
         """
-        INSERT INTO players (player_id, full_name, first_name, last_name, is_active)
+        INSERT INTO nba_players (player_id, full_name, first_name, last_name, is_active)
         VALUES %s
         ON CONFLICT (player_id) DO NOTHING
         """,

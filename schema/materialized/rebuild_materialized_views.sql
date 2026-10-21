@@ -107,6 +107,6 @@ WHERE effective_games_remaining_in_week > games_remaining_in_week;
 SELECT p.full_name, gfsw.game_date, gfsw.games_remaining_in_week,
        gfsw.effective_games_remaining_in_week, gfsw.is_last_game_of_week
 FROM game_fantasy_scores_weekly_effective gfsw
-JOIN players p ON p.player_id = gfsw.player_id
+JOIN nba_players p ON p.player_id = gfsw.player_id
 WHERE p.full_name ILIKE '%joki%' AND gfsw.season_id = '22024' AND gfsw.week_number = 5
 ORDER BY gfsw.game_date;

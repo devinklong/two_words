@@ -8,7 +8,7 @@ DROP TABLE IF EXISTS sleeper_player_crosswalk;
 
 CREATE TABLE sleeper_player_crosswalk (
     sleeper_player_id  TEXT    PRIMARY KEY,
-    nba_player_id      INTEGER UNIQUE REFERENCES players(player_id),
+    nba_player_id      INTEGER UNIQUE REFERENCES nba_players(player_id),
     sleeper_full_name  TEXT,
     sleeper_team        TEXT,
     sleeper_position    TEXT,

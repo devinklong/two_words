@@ -51,6 +51,6 @@ ORDER BY week_number;
 -- confirm the games listed match reality by cross-referencing team_schedule
 SELECT p.full_name, gfsw.game_date, gfsw.week_number, gfsw.fantasy_score
 FROM game_fantasy_scores_weekly gfsw
-JOIN players p ON p.player_id = gfsw.player_id
+JOIN nba_players p ON p.player_id = gfsw.player_id
 WHERE p.full_name ILIKE '%joki%' AND gfsw.season_id = '22024' AND gfsw.week_number = 5
 ORDER BY gfsw.game_date;

@@ -28,7 +28,7 @@ CREATE TABLE teams (
     year_founded INTEGER
 );
 
-CREATE TABLE players (
+CREATE TABLE nba_players (
     player_id INTEGER PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
     first_name VARCHAR(50),

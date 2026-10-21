@@ -6,7 +6,7 @@
 -- nba_api daily pipeline is the higher priority; this can wait.
 
 CREATE TABLE player_id_crosswalk (
-    player_id          INTEGER PRIMARY KEY REFERENCES players(player_id),
+    player_id          INTEGER PRIMARY KEY REFERENCES nba_players(player_id),
     sleeper_player_id  TEXT NOT NULL UNIQUE,
     match_method        TEXT,        -- e.g. 'exact_name', 'manual'
     matched_at          TIMESTAMP NOT NULL DEFAULT now()

@@ -1,7 +1,7 @@
 DROP TABLE IF EXISTS game_logs;
 CREATE TABLE game_logs (
     game_id          VARCHAR(20)  NOT NULL,
-    player_id        INTEGER      NOT NULL REFERENCES players(player_id),
+    player_id        INTEGER      NOT NULL REFERENCES nba_players(player_id),
     team_id          INTEGER      NOT NULL REFERENCES teams(team_id),
     opponent_team_id INTEGER      NOT NULL REFERENCES teams(team_id),
     season_id        VARCHAR(10),

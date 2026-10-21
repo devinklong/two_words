@@ -143,7 +143,7 @@ def fetch_valid_players_for_game(conn, game_id):
     cur.execute("""
         SELECT gl.player_id, p.full_name
         FROM game_logs gl
-        JOIN players p ON p.player_id = gl.player_id
+        JOIN nba_players p ON p.player_id = gl.player_id
         WHERE gl.game_id = %s
     """, (game_id,))
     rows = cur.fetchall()

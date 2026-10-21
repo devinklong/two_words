@@ -75,7 +75,7 @@ SELECT
 FROM transaction_players tp
 LEFT JOIN sleeper_player_crosswalk spc
     ON spc.sleeper_player_id = tp.sleeper_player_id
-LEFT JOIN players p
+LEFT JOIN nba_players p
     ON p.player_id = spc.nba_player_id;
 
 -- transaction_players_detail_labeled: convenience view for humans.

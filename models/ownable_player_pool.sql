@@ -162,6 +162,6 @@ ORDER BY stats_source;
 -- Jokić should trivially clear every season he has data for
 SELECT opp.*, p.full_name
 FROM ownable_player_pool opp
-JOIN players p ON p.player_id = opp.player_id
+JOIN nba_players p ON p.player_id = opp.player_id
 WHERE p.full_name ILIKE '%joki%'
 ORDER BY opp.season_id;

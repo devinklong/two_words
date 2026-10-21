@@ -46,7 +46,7 @@ def fetch_gaps(conn, date_from=None, date_to=None) -> pd.DataFrame:
     query = """
         SELECT g.player_id, p.first_name, p.last_name, g.team_id, g.game_id, g.game_date
         FROM team_schedule_gaps g
-        JOIN players p ON p.player_id = g.player_id
+        JOIN nba_players p ON p.player_id = g.player_id
     """
     conditions = []
     params = []

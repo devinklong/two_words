@@ -3,11 +3,20 @@
 -- season's actual first game (per team_schedule). Playoff byes for the top
 -- 2 seeds affect WHICH TEAMS play in week 22, not the date boundaries
 -- themselves, so this table doesn't need to know about standings/byes at
--- all — it's purely a date-to-week lookup.
+-- all -- it's purely a date-to-week lookup.
+--
+-- CHANGED 10/20/26: now ADDITIVE and idempotent. It used to be
+-- DROP TABLE IF EXISTS fantasy_weeks CASCADE + rebuild, which silently
+-- dropped every view depending on this table (game_fantasy_scores_weekly
+-- and everything downstream of it, up to game_lock_signal) every time a
+-- new season was added. Now: CREATE TABLE IF NOT EXISTS, and the INSERT
+-- skips any (season_id, week_number) that already exists, so rerunning
+-- only ever ADDS missing seasons and never touches existing rows or
+-- dependent views. To deliberately rebuild a season's weeks, delete just
+-- that season's rows first:
+--   DELETE FROM fantasy_weeks WHERE season_id = '22026';
 
-DROP TABLE IF EXISTS fantasy_weeks CASCADE;
-
-CREATE TABLE fantasy_weeks (
+CREATE TABLE IF NOT EXISTS fantasy_weeks (
     season_id       VARCHAR(10) NOT NULL,
     week_number     INTEGER     NOT NULL,
     week_start_date DATE        NOT NULL,
@@ -40,14 +49,16 @@ SELECT
     (n > 21) AS is_playoff_week
 FROM week1_monday w
 CROSS JOIN generate_series(1, 24) AS n
-ORDER BY w.season_id, n;
+ORDER BY w.season_id, n
+ON CONFLICT (season_id, week_number) DO NOTHING;
 
 -- =========================
 -- Verification
 -- =========================
 
--- Should be exactly 5 seasons x 24 weeks = 120 rows
-SELECT COUNT(*) FROM fantasy_weeks;
+-- 24 weeks per season in team_schedule (was 120 rows for 5 seasons;
+-- 144 once 22026 is added)
+SELECT season_id, COUNT(*) AS weeks FROM fantasy_weeks GROUP BY season_id ORDER BY season_id;
 
 -- 21 regular + 3 playoff per season, every season
 SELECT season_id, is_playoff_week, COUNT(*)
@@ -55,22 +66,5 @@ FROM fantasy_weeks
 GROUP BY season_id, is_playoff_week
 ORDER BY season_id, is_playoff_week;
 
--- Eyeball one season's full week list
-SELECT * FROM fantasy_weeks
-WHERE season_id = '22024'
-ORDER BY week_number;
-
--- Confirm week1_start actually falls on or before that season's real
--- first game date, and is genuinely a Monday
-SELECT
-    fw.season_id,
-    fw.week_start_date,
-    EXTRACT(ISODOW FROM fw.week_start_date) AS should_be_1_for_monday,
-    ts.first_game_date
-FROM fantasy_weeks fw
-JOIN (
-    SELECT season_id, MIN(game_date) AS first_game_date
-    FROM team_schedule
-    GROUP BY season_id
-) ts ON ts.season_id = fw.season_id
-WHERE fw.week_number = 1;
+-- Week 1 of the live season should start on the Monday of the opener's week
+SELECT * FROM fantasy_weeks WHERE season_id = '22026' ORDER BY week_number LIMIT 3;

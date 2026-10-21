@@ -79,7 +79,7 @@ import requests
 
 BASE_URL = "https://api.sleeper.app/v1"
 
-NBA_NAME_QUERY = "SELECT player_id, full_name FROM players;"  # ASSUMPTION -- see docstring
+NBA_NAME_QUERY = "SELECT player_id, full_name FROM nba_players;"  # ASSUMPTION -- see docstring
 
 
 def strip_accents(name):

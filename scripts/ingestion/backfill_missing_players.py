@@ -1,5 +1,5 @@
 """
-Backfills players present in game_logs but missing from players -- happens
+Backfills players present in game_logs but missing from nba_players -- happens
 when nba_api's bundled static player list (load_players.py) hasn't caught
 up to very recent additions that the live endpoints already know about.
 
@@ -7,7 +7,7 @@ CHAINED (8/10/26): after inserting missing players, also runs
 sync_game_fantasy_scores_weekly_effective() -- if any of those players'
 game_logs rows existed but never got a corresponding effective-table row
 (e.g. skipped because a join depending on the player_tiers/pool chain
-failed while the player was still missing from players), this catches
+failed while the player was still missing from nba_players), this catches
 them up. A no-op if there's nothing to catch up on.
 
 ADDED 8/21/26: an optional player_id argument, for a real gap this
@@ -54,7 +54,7 @@ def find_missing_player_ids(conn) -> list[int]:
     cur.execute("""
         SELECT DISTINCT gl.player_id
         FROM game_logs gl
-        LEFT JOIN players p ON p.player_id = gl.player_id
+        LEFT JOIN nba_players p ON p.player_id = gl.player_id
         WHERE p.player_id IS NULL
     """)
     ids = [row[0] for row in cur.fetchall()]
@@ -82,7 +82,7 @@ def insert_players(conn, results: list[dict]):
     execute_values(
         cur,
         """
-        INSERT INTO players (player_id, full_name, first_name, last_name, is_active)
+        INSERT INTO nba_players (player_id, full_name, first_name, last_name, is_active)
         VALUES %s
         ON CONFLICT (player_id) DO NOTHING
         """,
@@ -112,7 +112,7 @@ def main():
             sys.exit(1)
     else:
         missing_ids = find_missing_player_ids(conn)
-        print(f"Found {len(missing_ids)} player_id(s) in game_logs missing from players.")
+        print(f"Found {len(missing_ids)} player_id(s) in game_logs missing from nba_players.")
 
         if not missing_ids:
             print("Nothing to backfill.")

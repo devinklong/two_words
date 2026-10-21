@@ -76,7 +76,7 @@ SELECT p.full_name, gfsw.game_date, gfsw.games_before_in_week,
        gfsw.games_remaining_in_week, gfsw.total_team_games_this_week,
        gfsw.is_last_game_of_week, gfsw.fantasy_score
 FROM game_fantasy_scores_weekly_full gfsw
-JOIN players p ON p.player_id = gfsw.player_id
+JOIN nba_players p ON p.player_id = gfsw.player_id
 WHERE p.full_name ILIKE '%joki%' AND gfsw.season_id = '22024' AND gfsw.week_number = 5
 ORDER BY gfsw.game_date;
 

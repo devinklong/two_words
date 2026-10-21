@@ -86,4 +86,4 @@ FROM team_schedule_gaps
 GROUP BY player_id, game_id 
 HAVING COUNT(*) > 1;
 
-SELECT * FROM players WHERE player_id = 203648;
+SELECT * FROM nba_players WHERE player_id = 203648;
