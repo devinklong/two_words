@@ -1,0 +1,173 @@
+"""
+scripts/run_daily.py
+
+One-command morning routine for the live season. Runs each daily step in
+order as its own subprocess, stops at the first failure (so a broken load
+can't silently feed the next step), logs all output to
+scripts/logs/daily_<date>.log, and finishes with the independent verifier
+and the preflight so there is a single pass/fail summary.
+
+Steps, in order (the ORDER MATTERS -- see docs/daily_runbook.md):
+  1. load_daily_team_schedule.py           (must precede game logs)
+  2. REFRESH team_schedule_b2b_flags       (matview; the weekly-effective sync reads it and never updates rows it already wrote)
+  3. fantasy_weeks.sql                     (additive; no-op unless a season is missing)
+  4. load_players.py                       (offline; game_logs.player_id has a FK to nba_players again, so unknown players must exist first)
+  5. load_daily_game_logs.py <date>        (chains weekly-effective sync + gap_reasons/injuries)
+  6. backfill_missing_players.py           (no-op unless game_logs has unknown players)
+  7. build_sleeper_player_crosswalk.py     (only if rostered players still lack an nba_player_id)
+  8. run_daily_sync.py                     (rosters, matchups, transactions, points snapshots)
+  9. verify_current_league_independently.py --week W
+ 10. lock-signal check, waiver_wire_finder and opponent_scout (roster MY_ROSTER_ID) smoke tests (output goes to the log)
+ 11. season_opener_preflight.py --week W
+
+<date> defaults to YESTERDAY in America/Chicago: run this in the morning
+and it loads last night's games. W is the current fantasy week, looked up
+in fantasy_weeks for today.
+
+ASSUMPTION (not confirmed): load_daily_team_schedule.py takes no arguments.
+Run with --dry-run first, and check that script's header.
+
+Run (from project root):
+    python scripts/run_daily.py --dry-run         # print the plan, run nothing
+    python scripts/run_daily.py                   # normal morning run
+    python scripts/run_daily.py --date 2026-10-20 # load a specific game day
+    python scripts/run_daily.py --keep-going      # don't stop at a failure
+    python scripts/run_daily.py --backup          # pg_dump to ~/backups first
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "scripts"
+LOG_DIR = SCRIPTS / "logs"
+PY = sys.executable
+MY_ROSTER_ID = 8  # sweetdiddlydee -- used by the opponent_scout smoke test
+TZ = ZoneInfo("America/Chicago")
+# Steps that call stats.nba.com get one retry after a pause (it times out under load).
+RETRY_PAUSE_SECONDS = 60
+
+
+def current_week(today):
+    """(season_id, week_number or None) for the live season."""
+    sys.path.append(str(SCRIPTS))
+    from db_connection import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT season_id FROM current_season_config ORDER BY updated_at DESC LIMIT 1")
+    season_id = cur.fetchone()[0]
+    cur.execute("SELECT week_number FROM fantasy_weeks WHERE season_id = %s AND %s BETWEEN week_start_date AND week_end_date",
+                (season_id, today))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return season_id, (row[0] if row else None)
+
+
+def unmatched_rostered_count():
+    sys.path.append(str(SCRIPTS))
+    from db_connection import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM roster_ownership WHERE nba_player_id IS NULL")
+    n = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return n
+
+
+def build_steps(game_date, season_id, week, run_crosswalk):
+    wk = ["--week", str(week)] if week else ["--week", "1"]
+    psql = ["psql", "-d", "postgres"]
+    return [
+        ("team schedule", [PY, "scripts/ingestion/load_daily_team_schedule.py"], True),
+        ("refresh b2b flags", [*psql, "-c", "REFRESH MATERIALIZED VIEW team_schedule_b2b_flags"], False),
+        ("fantasy_weeks (additive)", [*psql, "-f", "schema/tables/fantasy_weeks.sql"], False),
+        ("load players (static list)", [PY, "scripts/ingestion/load_players.py"], False),
+        ("game logs", [PY, "scripts/ingestion/load_daily_game_logs.py", game_date], True),
+        ("backfill missing players", [PY, "scripts/ingestion/backfill_missing_players.py"], True),
+        *([("sleeper crosswalk", [PY, "scripts/sleeper/build_sleeper_player_crosswalk.py"], False)] if run_crosswalk else []),
+        ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
+        ("independent verify", [PY, "scripts/verify_current_league_independently.py", *wk], False),
+        ("lock signal check (in log)", [*psql, "-c", "SELECT player_stats_source, lock_signal, COUNT(*) FROM game_lock_signal "
+                                        f"WHERE season_id = '{season_id}' GROUP BY 1,2 ORDER BY 1,2"], False),
+        ("waiver finder smoke (in log)", [PY, "scripts/waiver_wire_finder.py", "--season-id", str(season_id), "--limit", "5"], False),
+        ("opponent scout smoke (in log)", [PY, "scripts/opponent_scout.py", str(MY_ROSTER_ID), *wk, "--season-id", str(season_id)], False),
+        ("preflight", [PY, "scripts/season_opener_preflight.py", *wk], False),
+    ]
+
+
+def run_step(name, cmd, retry, log):
+    env = {**os.environ, "PYTHONPATH": str(SCRIPTS)}
+    attempts = 2 if retry else 1
+    for attempt in range(1, attempts + 1):
+        log.write(f"\n===== {name} (attempt {attempt}) =====\n$ {' '.join(cmd)}\n")
+        log.flush()
+        start = time.time()
+        p = subprocess.run(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+        secs = time.time() - start
+        if p.returncode == 0:
+            return "OK", secs
+        if attempt < attempts:
+            print(f"  {name} failed (exit {p.returncode}); retrying in {RETRY_PAUSE_SECONDS}s...")
+            time.sleep(RETRY_PAUSE_SECONDS)
+    return f"FAIL (exit {p.returncode})", secs
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Daily morning routine.")
+    ap.add_argument("--date", help="game day to load, YYYY-MM-DD (default: yesterday, America/Chicago)")
+    ap.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
+    ap.add_argument("--keep-going", action="store_true", help="continue after a failed step")
+    ap.add_argument("--backup", action="store_true", help="pg_dump to ~/backups before anything else")
+    args = ap.parse_args()
+
+    now = datetime.now(TZ)
+    game_date = args.date or (now.date() - timedelta(days=1)).isoformat()
+
+    if args.dry_run:
+        week, run_xw = "<looked up at run time>", "<only if rostered players lack nba_player_id>"
+        steps = build_steps(game_date, "<season_id>", None, True)
+    else:
+        season_id, week = current_week(now.date())
+        run_xw = unmatched_rostered_count() > 0
+        steps = build_steps(game_date, season_id, week, run_xw)
+
+    print(f"Daily run: game date {game_date}, fantasy week {week}, crosswalk: {run_xw}")
+    if args.backup:
+        steps.insert(0, ("backup", ["bash", "-c", f"mkdir -p ~/backups && pg_dump postgres > ~/backups/postgres_{now.date()}.sql"], False))
+
+    if args.dry_run:
+        for i, (name, cmd, retry) in enumerate(steps, 1):
+            print(f"  {i}. {name}: {' '.join(cmd)}{'  [retry once]' if retry else ''}")
+        return
+
+    LOG_DIR.mkdir(exist_ok=True)
+    log_path = LOG_DIR / f"daily_{now.date()}.log"
+    results = []
+    with open(log_path, "a") as log:
+        log.write(f"\n######## run started {now.isoformat()} (game date {game_date}) ########\n")
+        for name, cmd, retry in steps:
+            print(f"-> {name} ...", flush=True)
+            status, secs = run_step(name, cmd, retry, log)
+            results.append((name, status, secs))
+            print(f"   {status} ({secs:.0f}s)")
+            if status != "OK" and not args.keep_going:
+                print(f"\nStopped at '{name}'. See {log_path}")
+                break
+
+    print("\n--- Summary ---")
+    for name, status, secs in results:
+        print(f"  {status:<14} {name} ({secs:.0f}s)")
+    print(f"Full log: {log_path}")
+    sys.exit(0 if all(s == "OK" for _, s, _ in results) and len(results) == len(steps) else 1)
+
+
+if __name__ == "__main__":
+    main()
