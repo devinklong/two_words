@@ -170,16 +170,16 @@ def upsert_transactions(cur, league_id, rounds=None):
         for t in transactions:
             cur.execute("""
                 INSERT INTO sleeper_transactions
-                    (transaction_id, league_id, type, status, week, roster_ids, adds, drops, created)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s / 1000.0))
+                    (transaction_id, league_id, type, status, week, roster_ids, adds, drops, created, waiver_bid)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s / 1000.0), %s)
                 ON CONFLICT (transaction_id) DO UPDATE SET
                     type = EXCLUDED.type, status = EXCLUDED.status, week = EXCLUDED.week,
                     roster_ids = EXCLUDED.roster_ids, adds = EXCLUDED.adds, drops = EXCLUDED.drops,
-                    created = EXCLUDED.created, synced_at = now();
+                    created = EXCLUDED.created, waiver_bid = EXCLUDED.waiver_bid, synced_at = now();
             """, (
                 t["transaction_id"], league_id, t.get("type"), t.get("status"), round_,
                 t.get("roster_ids") or [], json.dumps(t.get("adds")), json.dumps(t.get("drops")),
-                t.get("created"),
+                t.get("created"), (t.get("settings") or {}).get("waiver_bid"),
             ))
             total += 1
     return total
