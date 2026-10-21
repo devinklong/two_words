@@ -8,11 +8,13 @@ scripts/logs/daily_<date>.log, and finishes with the independent verifier
 and the preflight so there is a single pass/fail summary.
 
 Steps, in order (the ORDER MATTERS -- see docs/daily_runbook.md):
-  1. load_daily_team_schedule.py           (must precede game logs)
+  0. load_season_schedule.py --write       (full season incl. UPCOMING games; idempotent; must precede game logs)
+  1. load_daily_team_schedule.py           (played games with results; must precede game logs)
   2. REFRESH team_schedule_b2b_flags       (matview; the weekly-effective sync reads it and never updates rows it already wrote)
   3. fantasy_weeks.sql                     (additive; no-op unless a season is missing)
   4. load_players.py                       (offline; game_logs.player_id has a FK to nba_players again, so unknown players must exist first)
-  5. load_daily_game_logs.py <date>        (chains weekly-effective sync + gap_reasons/injuries)
+  5. load_daily_game_logs.py <date>        (chains weekly-effective sync + gap_reasons/injuries; a game that fails on an
+                                           unknown rookie is healed via add_player_by_id.py and the loader re-run)
   6. backfill_missing_players.py           (no-op unless game_logs has unknown players)
   7. build_sleeper_player_crosswalk.py     (only if rostered players still lack an nba_player_id)
   8. run_daily_sync.py                     (rosters, matchups, transactions, points snapshots)
@@ -37,6 +39,7 @@ Run (from project root):
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -86,7 +89,8 @@ def build_steps(game_date, season_id, week, run_crosswalk):
     wk = ["--week", str(week)] if week else ["--week", "1"]
     psql = ["psql", "-d", "postgres"]
     return [
-        ("team schedule", [PY, "scripts/ingestion/load_daily_team_schedule.py"], True),
+        ("season schedule (full, incl. upcoming)", [PY, "scripts/ingestion/load_season_schedule.py", "--write"], True),
+        ("team schedule (played games)", [PY, "scripts/ingestion/load_daily_team_schedule.py"], True),
         ("refresh b2b flags", [*psql, "-c", "REFRESH MATERIALIZED VIEW team_schedule_b2b_flags"], False),
         ("fantasy_weeks (additive)", [*psql, "-f", "schema/tables/fantasy_weeks.sql"], False),
         ("load players (static list)", [PY, "scripts/ingestion/load_players.py"], False),
@@ -103,21 +107,53 @@ def build_steps(game_date, season_id, week, run_crosswalk):
     ]
 
 
-def run_step(name, cmd, retry, log):
+FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
+MAX_HEAL_ROUNDS = 5
+
+
+def run_once(cmd, log):
+    """Run a command, tee its output into the log, return (returncode, output)."""
     env = {**os.environ, "PYTHONPATH": str(SCRIPTS)}
+    p = subprocess.run(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    log.write(p.stdout)
+    log.flush()
+    return p.returncode, p.stdout
+
+
+def run_step(name, cmd, retry, log, heal_players=False):
+    """heal_players: for the game-log loader. That script exits 0 even when a game fails, so
+    scan its output; if a game failed on an unknown player_id (a rookie missing from
+    nba_players), add the player via add_player_by_id.py and re-run, up to MAX_HEAL_ROUNDS.
+    Any 'game(s) failed' left over counts as a FAIL."""
     attempts = 2 if retry else 1
+    start = time.time()
     for attempt in range(1, attempts + 1):
         log.write(f"\n===== {name} (attempt {attempt}) =====\n$ {' '.join(cmd)}\n")
         log.flush()
-        start = time.time()
-        p = subprocess.run(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-        secs = time.time() - start
-        if p.returncode == 0:
-            return "OK", secs
+        code, out = run_once(cmd, log)
+        if heal_players and code == 0:
+            for round_no in range(1, MAX_HEAL_ROUNDS + 1):
+                if "game(s) failed" not in out:
+                    break
+                ids = sorted(set(FK_MISSING_PLAYER.findall(out)))
+                if not ids:
+                    code = 1  # games failed for some other reason
+                    break
+                log.write(f"\n--- healing round {round_no}: adding unknown players {ids} ---\n")
+                add_code, _ = run_once([PY, "scripts/ingestion/add_player_by_id.py", *ids], log)
+                if add_code != 0:
+                    code = 1
+                    break
+                print(f"  added unknown player id(s) {', '.join(ids)}; reloading game logs...")
+                code, out = run_once(cmd, log)
+            if code == 0 and "game(s) failed" in out:
+                code = 1
+        if code == 0:
+            return "OK", time.time() - start
         if attempt < attempts:
-            print(f"  {name} failed (exit {p.returncode}); retrying in {RETRY_PAUSE_SECONDS}s...")
+            print(f"  {name} failed (exit {code}); retrying in {RETRY_PAUSE_SECONDS}s...")
             time.sleep(RETRY_PAUSE_SECONDS)
-    return f"FAIL (exit {p.returncode})", secs
+    return f"FAIL (exit {code})", time.time() - start
 
 
 def main():
@@ -155,7 +191,7 @@ def main():
         log.write(f"\n######## run started {now.isoformat()} (game date {game_date}) ########\n")
         for name, cmd, retry in steps:
             print(f"-> {name} ...", flush=True)
-            status, secs = run_step(name, cmd, retry, log)
+            status, secs = run_step(name, cmd, retry, log, heal_players=(name == "game logs"))
             results.append((name, status, secs))
             print(f"   {status} ({secs:.0f}s)")
             if status != "OK" and not args.keep_going:

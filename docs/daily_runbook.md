@@ -14,6 +14,9 @@ manual version with checkpoints, for the first run(s) and for debugging.
   (a materialized view) for `effective_games_remaining_in_week`. If the
   schedule and that matview are stale when it runs, those rows are wrong
   permanently. So: schedule -> refresh matview -> game logs.
+- `team_schedule` only receives PLAYED games from the daily loader, so
+  upcoming games come from `load_season_schedule.py`; without them the
+  "games remaining" values are wrong at insert time and stay wrong.
 - `fantasy_weeks` for 22026 was seeded by hand on 10/20 (week 1 starts
   Mon 2026-10-19). `team_schedule` is built from games, so the real check
   is possible only after the opener lands.
@@ -23,12 +26,19 @@ manual version with checkpoints, for the first run(s) and for debugging.
 1. Backup
    `mkdir -p ~/backups && pg_dump postgres > ~/backups/postgres_$(date +%F)_pre_load.sql && ls -lh ~/backups`
 
-2. Team schedule
+2. Schedules (the live source of "games remaining")
+   `python scripts/ingestion/load_season_schedule.py --write`
    `python scripts/ingestion/load_daily_team_schedule.py`
-   CHECK: 22026 exists, and includes dates AFTER 10/20 (the weekly
-   "games remaining" columns need upcoming games, not just played ones):
-   `psql -d postgres -c "SELECT season_id, MIN(game_date), MAX(game_date), COUNT(*) FROM team_schedule GROUP BY 1 ORDER BY 1"`
-   If 22026 has only played games, STOP and ask before continuing.
+   The daily loader only ever returns games ALREADY PLAYED (verified
+   10/21/26: a future date range inserted 0 rows). The season loader pulls
+   the full regular-season schedule from nba_api ScheduleLeagueV2 and
+   inserts upcoming games with NULL results. It refuses to write unless it
+   finds 1230 games and 82 per team. Idempotent; safe to rerun daily
+   (picks up postponements for unplayed games only).
+   CHECK: 22026 now has 2460 rows and runs through April:
+   `psql -d postgres -c "SELECT season_id, MIN(game_date), MAX(game_date), COUNT(*), COUNT(wl) AS played FROM team_schedule GROUP BY 1 ORDER BY 1"`
+   If the loader's column auto-detection fails it prints the columns and
+   exits without writing; run `--inspect` and send the output.
 
 3. Refresh the b2b matview
    `psql -d postgres -c "REFRESH MATERIALIZED VIEW team_schedule_b2b_flags"`
