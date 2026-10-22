@@ -76,7 +76,10 @@ def get_free_agents(conn, league_id: str) -> list[dict]:
         FROM sleeper_player_crosswalk c
         LEFT JOIN roster_ownership ro
             ON ro.sleeper_player_id = c.sleeper_player_id AND ro.league_id = %s
+        LEFT JOIN nba_player_exclusions ex
+            ON ex.nba_player_id = c.nba_player_id
         WHERE ro.sleeper_player_id IS NULL
+          AND ex.nba_player_id IS NULL
         ORDER BY c.sleeper_full_name
     """, (league_id,))
     rows = cur.fetchall()
