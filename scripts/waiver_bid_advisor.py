@@ -146,7 +146,7 @@ SELECT sleeper_player_id, array_agg(position) FROM sleeper_player_fantasy_positi
 # Current-season stats once the player has 20 games; before that the previous season if it has 20+ games
 # (a 1-game current season is noise and has no stddev); otherwise whatever row exists (rookies).
 VALUES_SQL = """
-SELECT DISTINCT ON (player_id) player_id, avg_fantasy_score, stddev_fantasy_score
+SELECT DISTINCT ON (player_id) player_id, avg_fantasy_score, stddev_fantasy_score, season_id
 FROM player_season_fantasy_stats
 WHERE season_id IN (%(cur)s, %(prev)s)
 ORDER BY player_id, (season_id = %(cur)s AND games_played >= 20) DESC, (games_played >= 20) DESC, season_id DESC
@@ -171,7 +171,34 @@ def fetch_taxi(conn, league_id):
 SPIKE_SD = 1.25  # same spike definition as the finder: average + 1.25 * standard deviation
 
 
-def fetch_fit_inputs(conn, league_id, season_id, value="avg"):
+# Players whose team now differs from the team of their last game before this season: their old
+# stats came from another role/team, so they are discounted until the current season has 20 games.
+MOVERS_SQL = """
+WITH last_prev AS (
+  SELECT DISTINCT ON (player_id) player_id, team_id AS old_team
+  FROM game_logs WHERE game_date < %(cutoff)s
+  ORDER BY player_id, game_date DESC)
+SELECT l.player_id
+FROM last_prev l
+JOIN nba_player_current_team c ON c.player_id = l.player_id AND c.team_id <> l.old_team
+"""
+
+
+def fetch_movers(conn, season_id):
+    """Set of nba player ids who changed teams since last season. Empty if the tables are not ready."""
+    cutoff = f"{int(str(season_id)[1:])}-09-01"
+    cur = conn.cursor()
+    try:
+        cur.execute(MOVERS_SQL, {"cutoff": cutoff})
+        return {r[0] for r in cur.fetchall()}
+    except Exception:
+        conn.rollback()
+        return set()
+    finally:
+        cur.close()
+
+
+def fetch_fit_inputs(conn, league_id, season_id, value="avg", movers=frozenset(), mover_factor=1.0):
     """Returns (rosters, positions): rosters = {roster_id: [(value, positions), ...]}."""
     from lineup_fit import KNOWN_POSITIONS
     cur = conn.cursor()
@@ -182,10 +209,13 @@ def fetch_fit_inputs(conn, league_id, season_id, value="avg"):
         print(f"WARNING: unrecognized fantasy positions {sorted(unknown)}; those can only fill UTIL.")
     cur.execute(VALUES_SQL, {"cur": season_id, "prev": str(int(season_id) - 1)})
     values = {}
-    for pid, avg, sd in cur.fetchall():
+    for pid, avg, sd, row_season in cur.fetchall():
         if avg is None:
             continue
-        values[pid] = float(avg) + (SPIKE_SD * float(sd or 0) if value == "spike" else 0.0)
+        v = float(avg) + (SPIKE_SD * float(sd or 0) if value == "spike" else 0.0)
+        if pid in movers and str(row_season) != str(season_id):
+            v *= mover_factor  # old team's numbers; discounted until he has 20 games this season
+        values[pid] = v
     cur.execute(ROSTERS_SQL, {"league": league_id})
     taxi = fetch_taxi(conn, league_id)
     rosters = {}
@@ -372,7 +402,7 @@ def print_advice(rows, rivals, args, fit, sched=None):
         else:
             price = f"{st['n']:>6} {st['median']:>4.0f} {st['p90']:>4.0f} {st['max']:>4}"
             sug = f"${s['low']}-${s['high']}" + (" (thin)" if s["thin"] else "")
-        line = f"{r['player_name']:<22} {r['tier']:<8} {r['spike_bar']:>8.2f} {price}  {sug:>10}"
+        line = f"{r['player_name'] + ('*' if r.get('nba_player_id') in getattr(args, 'movers', ()) else ''):<22} {r['tier']:<8} {r['spike_bar']:>8.2f} {price}  {sug:>10}"
         if fit:
             mine = gains.get(args.my_roster_id, 0.0)
             top = sorted(((g, rid) for rid, g in gains.items() if rid != args.my_roster_id and g >= args.min_upgrade),
@@ -396,6 +426,7 @@ def print_advice(rows, rivals, args, fit, sched=None):
     print("capped at your budget and at (richest rival's remaining + 1). 'thin' = fewer than "
           f"{args.min_sample} past claims in that tier. Heuristic, not a forecast.")
     if sched:
+        print("* = changed teams since last season. His old stats are discounted in 'You +' / 'Rivals' (x mover-factor) and in SpikeBar (ownable_player_pool view, x0.90); Tier is not adjusted.")
         print(f"Schedule: week {sched['week']} ({sched['start']} to {sched['end']}); Left = games from tomorrow to the week's end; "
               "strip: 'o' played, '-' past no game, 'x' upcoming, '.' none. Today's games count as played. "
               "'(last team)' = team of his last game, not confirmed current; '(no NBA team)' = not on a roster.")
@@ -428,6 +459,7 @@ def main():
     ap.add_argument("--min-sample", type=int, default=5, help="past claims in a tier before it is not 'thin' (default 5)")
     ap.add_argument("--min-upgrade", type=float, default=2.0, help="lineup points per game a player must add to a big bidder to count as contested (default 2.0)")
     ap.add_argument("--value", choices=["avg", "spike"], default="spike", help="how lineup gain scores players: spike = average + 1.25 * stddev (default, matches the finder and Lock-In); avg = plain season average")
+    ap.add_argument("--mover-factor", type=float, default=0.90, help="multiplier on last season's numbers for players who changed teams (default 0.90; 1.0 turns it off)")
     ap.add_argument("--no-fit", action="store_true", help="skip the lineup-fit calculation")
     ap.add_argument("--no-schedule", action="store_true", help="skip the weekly schedule columns")
     ap.add_argument("--plays-on", help="only players whose team plays on this day: 'tomorrow' or YYYY-MM-DD")
@@ -470,8 +502,10 @@ def main():
         rivals = fetch_rivals(conn, league_id, args.big_bid)
         fit = not args.no_fit
         rosters = positions = values = None
+        movers = fetch_movers(conn, args.season_id)
+        args.movers = movers
         if fit:
-            rosters, positions, values = fetch_fit_inputs(conn, league_id, args.season_id, args.value)
+            rosters, positions, values = fetch_fit_inputs(conn, league_id, args.season_id, args.value, movers, args.mover_factor)
     finally:
         conn.close()
 
