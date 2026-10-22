@@ -10,6 +10,7 @@ and the preflight so there is a single pass/fail summary.
 Steps, in order (the ORDER MATTERS -- see docs/daily_runbook.md):
   0. load_season_schedule.py --write       (full season incl. UPCOMING games; idempotent; must precede game logs)
   1. load_daily_team_schedule.py           (played games with results; must precede game logs)
+  1b. check_schedule_growth.py             (log only: warns when the NBA schedule grew, e.g. Cup games -> December rebuild)
   2. REFRESH team_schedule_b2b_flags       (matview; the weekly-effective sync reads it and never updates rows it already wrote)
   3. fantasy_weeks.sql                     (additive; no-op unless a season is missing)
   4. load_players.py                       (offline; game_logs.player_id has a FK to nba_players again, so unknown players must exist first)
@@ -92,6 +93,7 @@ def build_steps(game_date, season_id, week, run_crosswalk):
     return [
         ("season schedule (full, incl. upcoming)", [PY, "scripts/ingestion/load_season_schedule.py", "--write"], True),
         ("team schedule (played games)", [PY, "scripts/ingestion/load_daily_team_schedule.py"], True),
+        ("schedule growth check (in log)", [PY, "scripts/check_schedule_growth.py", "--season-id", str(season_id)], False),
         ("refresh b2b flags", [*psql, "-c", "REFRESH MATERIALIZED VIEW team_schedule_b2b_flags"], False),
         ("fantasy_weeks (additive)", [*psql, "-f", "schema/tables/fantasy_weeks.sql"], False),
         ("load players (static list)", [PY, "scripts/ingestion/load_players.py"], False),
