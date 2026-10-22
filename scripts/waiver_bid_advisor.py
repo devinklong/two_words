@@ -143,12 +143,13 @@ POSITIONS_SQL = """
 SELECT sleeper_player_id, array_agg(position) FROM sleeper_player_fantasy_positions GROUP BY 1
 """
 
-# Current-season average once the player has 20 games, otherwise the latest season on record.
+# Current-season stats once the player has 20 games; before that the previous season if it has 20+ games
+# (a 1-game current season is noise and has no stddev); otherwise whatever row exists (rookies).
 VALUES_SQL = """
 SELECT DISTINCT ON (player_id) player_id, avg_fantasy_score, stddev_fantasy_score
 FROM player_season_fantasy_stats
 WHERE season_id IN (%(cur)s, %(prev)s)
-ORDER BY player_id, (season_id = %(cur)s AND games_played >= 20) DESC, season_id DESC
+ORDER BY player_id, (season_id = %(cur)s AND games_played >= 20) DESC, (games_played >= 20) DESC, season_id DESC
 """
 
 
@@ -188,18 +189,27 @@ def fetch_fit_inputs(conn, league_id, season_id, value="avg"):
     cur.execute(ROSTERS_SQL, {"league": league_id})
     taxi = fetch_taxi(conn, league_id)
     rosters = {}
+    no_stats = 0
     for roster_id, _owner, sid, nba_id, _name in cur.fetchall():
         if sid in taxi.get(roster_id, ()):
             continue
         rosters.setdefault(roster_id, []).append((values.get(nba_id, 0.0), positions.get(sid, [])))
+        if nba_id not in values:
+            no_stats += 1
     cur.close()
-    return rosters, positions
+    if no_stats:
+        print(f"Note: {no_stats} rostered players have no season stats and count as 0 (rookies, unmatched ids).")
+    return rosters, positions, values
 
 
-def compute_gains(rosters, positions, target, value="avg"):
+def compute_gains(rosters, positions, target, values, value="avg"):
     """{roster_id: points per game the target adds to that team's best lineup}."""
     from lineup_fit import best_lineup_value, lineup_gain
-    cand_value = float(target["spike_bar"]) if value == "spike" else float(target["avg_fantasy_score"])
+    # Score the candidate from the SAME table as the rosters (values), so both sides use one definition.
+    # Fall back to the finder's own numbers only if he has no season stats row.
+    cand_value = values.get(target.get("nba_player_id"))
+    if cand_value is None:
+        cand_value = float(target["spike_bar"]) if value == "spike" else float(target["avg_fantasy_score"])
     cand = (cand_value, positions.get(target["sleeper_player_id"], []))
     return {rid: lineup_gain(players, cand, base_value=best_lineup_value(players))
             for rid, players in rosters.items()}
@@ -391,7 +401,7 @@ def print_advice(rows, rivals, args, fit, sched=None):
               "'(last team)' = team of his last game, not confirmed current; '(no NBA team)' = not on a roster.")
     if fit:
         print("You + / Rivals: fantasy points per game the player adds to that team's best 9-man lineup "
-              "(season averages; a rookie with no stats counts as 0).")
+              "(season averages, or average + 1.25 * stddev with --value spike; a rookie with no stats counts as 0).")
 
 
 def print_rivals(rivals, args):
@@ -459,15 +469,15 @@ def main():
         class_stats = fetch_class_stats(conn)
         rivals = fetch_rivals(conn, league_id, args.big_bid)
         fit = not args.no_fit
-        rosters = positions = None
+        rosters = positions = values = None
         if fit:
-            rosters, positions = fetch_fit_inputs(conn, league_id, args.season_id, args.value)
+            rosters, positions, values = fetch_fit_inputs(conn, league_id, args.season_id, args.value)
     finally:
         conn.close()
 
     rows = []
     for r in report:
-        gains = compute_gains(rosters, positions, r, args.value) if fit else {}
+        gains = compute_gains(rosters, positions, r, values, args.value) if fit else {}
         st = class_stats.get(r["tier"])
         s = suggest(st, rivals, args.my_roster_id, args.big_bid, args.min_big_wins, args.min_big_share, args.min_sample,
                     gains=gains if fit else None, min_upgrade=args.min_upgrade)
