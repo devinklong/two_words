@@ -145,7 +145,7 @@ SELECT sleeper_player_id, array_agg(position) FROM sleeper_player_fantasy_positi
 
 # Current-season average once the player has 20 games, otherwise the latest season on record.
 VALUES_SQL = """
-SELECT DISTINCT ON (player_id) player_id, avg_fantasy_score
+SELECT DISTINCT ON (player_id) player_id, avg_fantasy_score, stddev_fantasy_score
 FROM player_season_fantasy_stats
 WHERE season_id IN (%(cur)s, %(prev)s)
 ORDER BY player_id, (season_id = %(cur)s AND games_played >= 20) DESC, season_id DESC
@@ -167,7 +167,10 @@ def fetch_taxi(conn, league_id):
         cur.close()
 
 
-def fetch_fit_inputs(conn, league_id, season_id):
+SPIKE_SD = 1.25  # same spike definition as the finder: average + 1.25 * standard deviation
+
+
+def fetch_fit_inputs(conn, league_id, season_id, value="avg"):
     """Returns (rosters, positions): rosters = {roster_id: [(value, positions), ...]}."""
     from lineup_fit import KNOWN_POSITIONS
     cur = conn.cursor()
@@ -177,7 +180,11 @@ def fetch_fit_inputs(conn, league_id, season_id):
     if unknown:
         print(f"WARNING: unrecognized fantasy positions {sorted(unknown)}; those can only fill UTIL.")
     cur.execute(VALUES_SQL, {"cur": season_id, "prev": str(int(season_id) - 1)})
-    values = {r[0]: float(r[1]) for r in cur.fetchall() if r[1] is not None}
+    values = {}
+    for pid, avg, sd in cur.fetchall():
+        if avg is None:
+            continue
+        values[pid] = float(avg) + (SPIKE_SD * float(sd or 0) if value == "spike" else 0.0)
     cur.execute(ROSTERS_SQL, {"league": league_id})
     taxi = fetch_taxi(conn, league_id)
     rosters = {}
@@ -189,10 +196,11 @@ def fetch_fit_inputs(conn, league_id, season_id):
     return rosters, positions
 
 
-def compute_gains(rosters, positions, target):
+def compute_gains(rosters, positions, target, value="avg"):
     """{roster_id: points per game the target adds to that team's best lineup}."""
     from lineup_fit import best_lineup_value, lineup_gain
-    cand = (float(target["avg_fantasy_score"]), positions.get(target["sleeper_player_id"], []))
+    cand_value = float(target["spike_bar"]) if value == "spike" else float(target["avg_fantasy_score"])
+    cand = (cand_value, positions.get(target["sleeper_player_id"], []))
     return {rid: lineup_gain(players, cand, base_value=best_lineup_value(players))
             for rid, players in rosters.items()}
 
@@ -409,6 +417,7 @@ def main():
     ap.add_argument("--min-big-share", type=float, default=0.20, help="share of a rival's wins that must be big bids (default 0.20)")
     ap.add_argument("--min-sample", type=int, default=5, help="past claims in a tier before it is not 'thin' (default 5)")
     ap.add_argument("--min-upgrade", type=float, default=2.0, help="lineup points per game a player must add to a big bidder to count as contested (default 2.0)")
+    ap.add_argument("--value", choices=["avg", "spike"], default="spike", help="how lineup gain scores players: spike = average + 1.25 * stddev (default, matches the finder and Lock-In); avg = plain season average")
     ap.add_argument("--no-fit", action="store_true", help="skip the lineup-fit calculation")
     ap.add_argument("--no-schedule", action="store_true", help="skip the weekly schedule columns")
     ap.add_argument("--plays-on", help="only players whose team plays on this day: 'tomorrow' or YYYY-MM-DD")
@@ -452,13 +461,13 @@ def main():
         fit = not args.no_fit
         rosters = positions = None
         if fit:
-            rosters, positions = fetch_fit_inputs(conn, league_id, args.season_id)
+            rosters, positions = fetch_fit_inputs(conn, league_id, args.season_id, args.value)
     finally:
         conn.close()
 
     rows = []
     for r in report:
-        gains = compute_gains(rosters, positions, r) if fit else {}
+        gains = compute_gains(rosters, positions, r, args.value) if fit else {}
         st = class_stats.get(r["tier"])
         s = suggest(st, rivals, args.my_roster_id, args.big_bid, args.min_big_wins, args.min_big_share, args.min_sample,
                     gains=gains if fit else None, min_upgrade=args.min_upgrade)
