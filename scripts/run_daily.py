@@ -114,7 +114,7 @@ def build_steps(game_date, season_id, week, run_crosswalk):
 
 
 FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
-MAX_HEAL_ROUNDS = 5
+MAX_HEAL_ROUNDS = 10
 
 
 def run_once(cmd, log):

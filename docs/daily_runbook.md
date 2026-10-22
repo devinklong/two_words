@@ -68,7 +68,7 @@ If a step times out or the terminal hangs, set a query limit first:
    "game(s) failed". A failure on a foreign key naming a player_id means that
    rookie isn't in `nba_players` yet (nba_api's static list lags behind
    debuts). `run_daily.py` handles this itself: it adds the player with
-   `scripts/ingestion/add_player_by_id.py` and reloads, up to 5 rounds (one
+   `scripts/ingestion/add_player_by_id.py` and reloads, up to 10 rounds (one
    game can hide several rookies; the insert stops at the first). By hand:
    `PYTHONPATH=scripts python scripts/ingestion/add_player_by_id.py ID [ID ...]`
    then rerun this step. (`backfill_single_player.py "Full Name" 2026-27`
