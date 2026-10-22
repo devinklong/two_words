@@ -68,7 +68,7 @@ If a step times out or the terminal hangs, set a query limit first:
    "game(s) failed". A failure on a foreign key naming a player_id means that
    rookie isn't in `nba_players` yet (nba_api's static list lags behind
    debuts). `run_daily.py` handles this itself: it adds the player with
-   `scripts/ingestion/add_player_by_id.py` and reloads, up to 10 rounds (one
+   `scripts/ingestion/add_player_by_id.py` and reloads, up to 5 rounds (one
    game can hide several rookies; the insert stops at the first). By hand:
    `PYTHONPATH=scripts python scripts/ingestion/add_player_by_id.py ID [ID ...]`
    then rerun this step. (`backfill_single_player.py "Full Name" 2026-27`
@@ -126,6 +126,13 @@ If a step times out or the terminal hangs, set a query limit first:
    c3. FAAB balances: `psql -d postgres -c "SELECT roster_id, owner_name, budget, budget_used, remaining, other_budget_movement FROM sleeper_faab_balance WHERE season = '2026' ORDER BY roster_id"`
       `remaining` should match the Sleeper app. A nonzero
       `other_budget_movement` means FAAB was traded or a bid is not stored.
+   c4. Your lock report (who on your roster played yesterday, LOCK/HOLD/PASS, and where to lock):
+      `python scripts/my_lock_report.py` (add `--date YYYY-MM-DD` for another day, `--filled PG,UTIL` for slots you already locked this week)
+      "Lock into" rule: position slots (PG/SG/SF/PF/C) before G/F before UTIL. When a player fits several
+      slots in a tier, he goes in the slot with the FEWEST games left for the rest of your roster (e.g. a PG/SG
+      goes to SG if your PG-eligible players have more games coming). Biggest score-over-bar gets first pick.
+      Caveats: the DB has no record of which slots you already locked (hence --filled), and games left
+      ignore injuries/rest. Also runs as a log-only smoke step in run_daily.py.
    d. Matchup analysis (your roster_id is 8):
       `python scripts/opponent_scout.py 8 --week 1 --season-id 22026`  (8 = sweetdiddlydee; also set as MY_ROSTER_ID in scripts/run_daily.py)
       Unmatched rookies show "no crosswalk match" until step 8 resolves them.

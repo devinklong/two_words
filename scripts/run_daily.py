@@ -19,7 +19,7 @@ Steps, in order (the ORDER MATTERS -- see docs/daily_runbook.md):
   7. build_sleeper_player_crosswalk.py     (only if rostered players still lack an nba_player_id)
   8. run_daily_sync.py                     (rosters, matchups, transactions, points snapshots)
   9. verify_current_league_independently.py --week W
- 10. current-team snapshot (nba_api, feeds the schedule columns); then lock-signal check, FAAB balances, waiver_wire_finder, waiver_bid_advisor and opponent_scout
+ 10. current-team snapshot (nba_api, feeds the schedule columns); then lock-signal check, FAAB balances, waiver_wire_finder, waiver_bid_advisor, my_lock_report and opponent_scout
      (roster MY_ROSTER_ID) smoke tests (output goes to the log)
  11. season_opener_preflight.py --week W
 
@@ -108,13 +108,14 @@ def build_steps(game_date, season_id, week, run_crosswalk):
                                     f"FROM sleeper_faab_balance WHERE season = '{str(season_id)[1:]}' ORDER BY roster_id"], False),
         ("waiver finder smoke (in log)", [PY, "scripts/waiver_wire_finder.py", "--season-id", str(season_id), "--limit", "5"], False),
         ("bid advisor smoke (in log)", [PY, "scripts/waiver_bid_advisor.py", "--season-id", str(season_id), "--limit", "5"], False),
+        ("my lock report smoke (in log)", [PY, "scripts/my_lock_report.py", "--roster-id", str(MY_ROSTER_ID), "--season-id", str(season_id)], False),
         ("opponent scout smoke (in log)", [PY, "scripts/opponent_scout.py", str(MY_ROSTER_ID), *wk, "--season-id", str(season_id)], False),
         ("preflight", [PY, "scripts/season_opener_preflight.py", *wk], False),
     ]
 
 
 FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
-MAX_HEAL_ROUNDS = 10
+MAX_HEAL_ROUNDS = 5
 
 
 def run_once(cmd, log):

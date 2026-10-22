@@ -61,6 +61,54 @@ def lineup_gain(roster, candidate, base_value=None):
     return best_lineup_value(roster + [candidate]) - base
 
 
+SPECIFIC_SLOTS = ["PG", "SG", "SF", "PF", "C"]   # tier 1: always preferred
+FLEX_SLOTS = ["G", "F"]                          # tier 2
+# tier 3: UTIL
+
+
+def slot_supply(candidates):
+    """candidates: list of (positions, games_left). Returns {slot: total remaining games among
+    players eligible for that slot} for every distinct slot."""
+    supply = {}
+    for slot in dict.fromkeys(SLOTS):
+        supply[slot] = sum(g for positions, g in candidates if eligible(positions, slot))
+    return supply
+
+
+def recommend_lock_slots(lockers, supply, filled=()):
+    """Which lineup slot should each LOCK player be locked into?
+    lockers: list of dicts {"name", "positions", "gap"}; processed biggest gap first.
+    supply:  {slot: remaining games among the OTHER players eligible for it} (see slot_supply).
+    filled:  slots already used this week (a slot can appear twice, e.g. UTIL).
+    Rule: use the most specific tier that has an open eligible slot (PG/SG/SF/PF/C, then G/F,
+    then UTIL). Within a tier take the slot with the LEAST remaining supply, because it is the
+    hardest to fill later; ties go in SLOTS order. Returns {name: (slot, reason)}.
+    A player with nothing open and eligible gets (None, reason)."""
+    open_slots = list(SLOTS)
+    for f in filled:
+        if f in open_slots:
+            open_slots.remove(f)
+    out = {}
+    for pl in sorted(lockers, key=lambda x: -x.get("gap", 0)):
+        chosen, reason = None, "no open slot he is eligible for"
+        for tier in (SPECIFIC_SLOTS, FLEX_SLOTS, ["UTIL"]):
+            options = [sl for sl in dict.fromkeys(open_slots) if sl in tier and eligible(pl["positions"], sl)]
+            if not options:
+                continue
+            chosen = min(options, key=lambda sl: (supply.get(sl, 0), SLOTS.index(sl)))
+            if len(options) > 1:
+                reason = ", ".join(f"{sl} {supply.get(sl, 0):g}" for sl in options) + " games left -> scarcest"
+            elif tier == SPECIFIC_SLOTS:
+                reason = f"only open position slot he fits ({chosen} {supply.get(chosen, 0):g} games left)"
+            else:
+                reason = f"no open position slot; {chosen}"
+            break
+        if chosen:
+            open_slots.remove(chosen)
+        out[pl["name"]] = (chosen, reason)
+    return out
+
+
 if __name__ == "__main__":
     # tiny self-test
     assert eligible(["PG"], "G") and eligible(["SG"], "G") and not eligible(["SF"], "G")
@@ -78,3 +126,9 @@ if __name__ == "__main__":
     thin = [(50, ["PG"]), (48, ["SG"])]
     print("thin roster, 45 C gain:", lineup_gain(thin, (45, ["C"])))
     print("empty roster:", best_lineup_value([]))
+    # slot recommendation: PG-eligible games abound, SG games are scarce -> a PG/SG player goes to SG
+    cands = [(["PG"], 3), (["PG"], 2), (["PG", "SG"], 2), (["SG"], 1)]
+    sup = slot_supply(cands)
+    print("supply:", sup)
+    print(recommend_lock_slots([{"name": "Q", "positions": ["PG", "SG"], "gap": 8}], sup))
+    print("SG filled:", recommend_lock_slots([{"name": "Q", "positions": ["PG", "SG"], "gap": 8}], sup, filled=["SG"]))
