@@ -115,6 +115,14 @@ If a step times out or the terminal hangs, set a query limit first:
       such wins) and still have $10+ left, and a suggested bid range. The
       rivals table at the bottom shows why. A heuristic, not a forecast;
       it does not yet consider rival positional need.
+      Schedule columns (added 10/21/26): `Left` = games from tomorrow to the end of
+      the fantasy week, a Mon..Sun strip ('o' played, 'x' upcoming), and `Tmrw`.
+      `--plays-on tomorrow` keeps only players whose team plays tomorrow (to replace a
+      drop); `--sort games` puts the most games left first; `--no-schedule` hides it.
+      Teams come from `nba_player_current_team`, refreshed daily by
+      `scripts/ingestion/load_current_teams.py --write` (nba_api CommonAllPlayers).
+      "(last team)" = fell back to his last game's team; "(no NBA team)" = not on a roster.
+      Hide retired players with the `nba_player_exclusions` table (see Known behaviors).
    c3. FAAB balances: `psql -d postgres -c "SELECT roster_id, owner_name, budget, budget_used, remaining, other_budget_movement FROM sleeper_faab_balance WHERE season = '2026' ORDER BY roster_id"`
       `remaining` should match the Sleeper app. A nonzero
       `other_budget_movement` means FAAB was traded or a bid is not stored.
@@ -182,6 +190,10 @@ Run it AFTER the last West Coast game has finished (morning is fine).
 - Failed waiver claims are in the table, but the reason they failed
   (outbid, player already taken, roster full) is not stored, so a failed
   bid is not necessarily a losing offer.
+- Retired or otherwise unwanted players: neither the NBA nor Sleeper API says who has
+  retired, and the static player list keeps them `is_active`. Hide them with:
+  `INSERT INTO nba_player_exclusions (nba_player_id, reason) SELECT player_id, 'retired' FROM nba_players WHERE full_name = 'Name Here' ON CONFLICT DO NOTHING;`
+  Both the waiver finder and the bid advisor skip those players. Remove the row to bring one back.
 - Game logs for a new rookie fail until the player exists in `nba_players`
   (see step 6). Expect this most nights early in the season.
 

@@ -19,7 +19,7 @@ Steps, in order (the ORDER MATTERS -- see docs/daily_runbook.md):
   7. build_sleeper_player_crosswalk.py     (only if rostered players still lack an nba_player_id)
   8. run_daily_sync.py                     (rosters, matchups, transactions, points snapshots)
   9. verify_current_league_independently.py --week W
- 10. lock-signal check, FAAB balances, waiver_wire_finder, waiver_bid_advisor and opponent_scout
+ 10. current-team snapshot (nba_api, feeds the schedule columns); then lock-signal check, FAAB balances, waiver_wire_finder, waiver_bid_advisor and opponent_scout
      (roster MY_ROSTER_ID) smoke tests (output goes to the log)
  11. season_opener_preflight.py --week W
 
@@ -100,6 +100,8 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         *([("sleeper crosswalk", [PY, "scripts/sleeper/build_sleeper_player_crosswalk.py"], False)] if run_crosswalk else []),
         ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
         ("independent verify", [PY, "scripts/verify_current_league_independently.py", *wk], False),
+        ("current teams table", [*psql, "-f", "schema/tables/nba_player_current_team.sql"], False),
+        ("current teams (nba_api snapshot)", [PY, "scripts/ingestion/load_current_teams.py", "--write"], True),
         ("lock signal check (in log)", [*psql, "-c", "SELECT player_stats_source, lock_signal, COUNT(*) FROM game_lock_signal "
                                         f"WHERE season_id = '{season_id}' GROUP BY 1,2 ORDER BY 1,2"], False),
         ("faab balances (in log)", [*psql, "-c", "SELECT roster_id, owner_name, budget, budget_used, remaining, other_budget_movement "
