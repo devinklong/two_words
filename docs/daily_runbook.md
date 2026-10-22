@@ -205,14 +205,17 @@ Run it AFTER the last West Coast game has finished (morning is fine).
   (see step 6). Expect this most nights early in the season.
 
 ## Team-change (mover) adjustment (added 10/22/26)
-`nba_player_movers` (view) lists players whose team now differs from their last game before this season.
-`ownable_player_pool` multiplies a mover's avg and stddev by 0.90 while his stats are still 'rolling'
-(under 20 games this season), so lock bars and the finder's SpikeBar reflect a likely smaller role. It stops
-by itself at 20 games. Membership in the pool is judged on the unadjusted numbers. Tiers are NOT adjusted.
+Defined in `models/ownable_player_pool.sql` (the single source; `rebuild_lock_pipeline.py` applies it).
+The `nba_player_movers` view (players whose team now differs from their last game before this season) is
+created in that same file. `ownable_player_pool` multiplies a mover's avg and stddev by 0.90 while his stats are
+still 'rolling' (under 20 games this season), so lock bars and the finder's SpikeBar reflect a likely smaller role.
+It stops by itself at 20 games. Pool membership is judged on the unadjusted numbers. Tiers are NOT adjusted.
+Why 0.90: movers' first 20 games ran ~0.89x their prior season vs ~0.98x for non-movers (4 offseasons, 61 movers).
 `waiver_bid_advisor.py` applies the same idea to lineup gains (`--mover-factor`, default 0.90) and marks movers with `*`.
-To change the factor, edit the 0.90 in schema/views/ownable_player_pool.sql and re-apply it.
-Apply order: `psql -d postgres -f schema/views/nba_player_movers.sql -f schema/views/ownable_player_pool.sql`
-(needs nba_player_current_team to exist). Check speed after: `\timing` then `SELECT COUNT(*) FROM game_lock_signal;`
+To change the factor, edit the 0.90 in models/ownable_player_pool.sql and rebuild. Do NOT run that file by itself
+casually: it starts with `DROP VIEW ... CASCADE`, which drops game_lock_signal and anything downstream;
+use `python scripts/rebuild_lock_pipeline.py` so everything is recreated in order.
+Check speed after a rebuild: `\timing` then `SELECT COUNT(*) FROM game_lock_signal;`
 
 ## Schedule growth check (added 10/22/26)
 The NBA has published 80 of 82 games per team; the NBA Cup knockout games (24) appear later (likely

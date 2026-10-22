@@ -46,6 +46,48 @@
 -- logic at all. Backtest/grid-search scripts still query
 -- player_season_fantasy_stats directly and are completely unaffected by
 -- any of this.
+--
+-- TEAM-CHANGE ADJUSTMENT (added 10/22/26): a player who changed teams since
+-- last season (nba_player_movers, defined below) and is still on 'rolling'
+-- stats -- so his window is mostly old-team games -- has avg and stddev
+-- multiplied by 0.90. Why 0.90: across the 4 offseasons in this database
+-- (22022-22025, 61 movers vs 379 non-movers), movers' first 20 games averaged
+-- ~0.89x their prior-season average vs ~0.98x for non-movers. Small sample
+-- (11-19 movers a year, ratio ranged 0.84-0.995), so treat as a rough prior.
+-- Pool MEMBERSHIP is judged on the UNadjusted numbers so the adjustment never
+-- removes anyone from the pool. It stops by itself once he has 20 games this
+-- season ('season' source). Tiers are NOT adjusted. To change the factor,
+-- edit the 0.90 in the "adjusted" CTE (and in scripts/waiver_bid_advisor.py
+-- --mover-factor if you want the advisor to match).
+
+-- Needed by nba_player_movers; same definition as schema/tables/nba_player_current_team.sql.
+CREATE TABLE IF NOT EXISTS nba_player_current_team (
+    player_id      INTEGER PRIMARY KEY,
+    team_id        INTEGER NOT NULL,
+    roster_status  INTEGER,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- START movers
+-- Players whose current NBA team differs from the team of their last game before
+-- this season (cutoff = Sept 1 of the current season's start year). Empty if the
+-- nba_player_current_team snapshot is empty. team_id 0 = not on a roster, ignored.
+CREATE OR REPLACE VIEW nba_player_movers AS
+WITH cutoff AS (
+    SELECT make_date(substr(season_id, 2)::int, 9, 1) AS d
+    FROM current_season_config
+    WHERE id = 1
+), last_prev AS (
+    SELECT DISTINCT ON (g.player_id) g.player_id, g.team_id AS old_team
+    FROM game_logs g, cutoff
+    WHERE g.game_date < cutoff.d
+    ORDER BY g.player_id, g.game_date DESC
+)
+SELECT l.player_id, l.old_team, c.team_id AS new_team
+FROM last_prev l
+JOIN nba_player_current_team c
+  ON c.player_id = l.player_id AND c.team_id <> l.old_team AND c.team_id <> 0;
+-- END movers
 
 DROP VIEW IF EXISTS ownable_player_pool CASCADE;
 
@@ -129,16 +171,29 @@ all_seasons AS (
     SELECT * FROM historical_seasons
     UNION ALL
     SELECT * FROM current_season_bootstrapped
+),
+-- ADDED 10/22/26: team-change adjustment (see header). factor 1.0 = no change.
+adjusted AS (
+    SELECT
+        a.player_id,
+        a.current_season_id,
+        a.avg_fantasy_score AS raw_avg,
+        a.stddev_fantasy_score AS raw_stddev,
+        a.stats_source,
+        CASE WHEN a.stats_source = 'rolling' AND m.player_id IS NOT NULL
+             THEN 0.90 ELSE 1.0 END AS factor
+    FROM all_seasons a
+    LEFT JOIN nba_player_movers m ON m.player_id = a.player_id
 )
 SELECT
     player_id,
     current_season_id AS season_id,
-    avg_fantasy_score,
-    stddev_fantasy_score,
+    ROUND(raw_avg * factor, 2) AS avg_fantasy_score,
+    ROUND(raw_stddev * factor, 2) AS stddev_fantasy_score,
     stats_source,
-    ROUND(avg_fantasy_score + 1.25 * stddev_fantasy_score, 2) AS eligibility_ceiling
-FROM all_seasons
-WHERE avg_fantasy_score + 1.25 * stddev_fantasy_score >= 35;
+    ROUND(raw_avg * factor + 1.25 * raw_stddev * factor, 2) AS eligibility_ceiling
+FROM adjusted
+WHERE raw_avg + 1.25 * raw_stddev >= 35;
 
 -- =========================
 -- Verification
@@ -165,3 +220,12 @@ FROM ownable_player_pool opp
 JOIN nba_players p ON p.player_id = opp.player_id
 WHERE p.full_name ILIKE '%joki%'
 ORDER BY opp.season_id;
+
+-- Movers still on rolling stats (adjusted), for a quick eyeball
+SELECT p.full_name, opp.avg_fantasy_score, opp.stddev_fantasy_score, opp.eligibility_ceiling
+FROM ownable_player_pool opp
+JOIN nba_player_movers m ON m.player_id = opp.player_id
+JOIN nba_players p ON p.player_id = opp.player_id
+WHERE opp.stats_source = 'rolling'
+  AND opp.season_id = (SELECT season_id FROM current_season_config WHERE id = 1)
+ORDER BY opp.eligibility_ceiling DESC;
