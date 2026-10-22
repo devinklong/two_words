@@ -35,6 +35,13 @@ How the suggestion is made (a transparent heuristic, not a model):
      once 20 games, else the latest season, like the finder). A big bidder only counts as
      contesting a player when the player would add at least --min-upgrade points to
      that team's lineup. Pass --no-fit to skip this.
+  5. SCHEDULE (added 10/21/26): each free agent's NBA team (nba_player_current_team, refreshed by
+     scripts/ingestion/load_current_teams.py; a player not in it is 'no NBA team'; only if the table is
+     empty does it fall back to the team of his last game) is matched
+     to team_schedule for the rest of the fantasy week. "Left" = games from tomorrow to the end of
+     the week; the strip shows Mon..Sun ('o' game already played, '-' past day without one, 'x' upcoming game, '.' none). Use
+     --plays-on tomorrow (or YYYY-MM-DD) to keep only players whose team plays that day, and
+     --sort games to order by games left. Today's games are treated as already played/locked.
 Limits: three seasons of bids; offseason/preseason bidding differs from in-season;
 roster limits (who a rival would have to drop) are NOT considered; ties on priority
 are not modeled; rookies without stats count as 0 in a lineup.
@@ -46,7 +53,9 @@ Run (from project root):
 
 import argparse
 import sys
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.append(str(Path(__file__).resolve().parent))
 
@@ -105,6 +114,25 @@ ORDER BY f.roster_id
 """
 
 
+WEEK_SQL = """
+SELECT week_number, week_start_date, week_end_date FROM fantasy_weeks
+WHERE season_id = %(season)s AND %(day)s BETWEEN week_start_date AND week_end_date
+"""
+
+TEAM_GAMES_SQL = """
+SELECT team_id, game_date FROM team_schedule
+WHERE season_id = %(season)s AND game_date BETWEEN %(lo)s AND %(hi)s
+"""
+
+CURRENT_TEAM_SQL = """
+SELECT player_id, team_id FROM nba_player_current_team WHERE player_id = ANY(%(ids)s)
+"""
+
+LAST_TEAM_SQL = """
+SELECT DISTINCT ON (player_id) player_id, team_id FROM game_logs
+WHERE player_id = ANY(%(ids)s) ORDER BY player_id, game_date DESC
+"""
+
 ROSTERS_SQL = """
 SELECT roster_id, owner_name, sleeper_player_id, nba_player_id, player_name
 FROM roster_ownership
@@ -149,6 +177,81 @@ def compute_gains(rosters, positions, target):
     cand = (float(target["avg_fantasy_score"]), positions.get(target["sleeper_player_id"], []))
     return {rid: lineup_gain(players, cand, base_value=best_lineup_value(players))
             for rid, players in rosters.items()}
+
+
+def fetch_schedule_context(conn, season_id, today, plays_on):
+    """Returns None when today is not inside a fantasy week; else
+    {week, start, end, tomorrow, games: {team_id: set(dates)}} covering tomorrow..max(week end, plays_on)."""
+    cur = conn.cursor()
+    cur.execute(WEEK_SQL, {"season": season_id, "day": today})
+    row = cur.fetchone()
+    if row is None:
+        cur.close()
+        return None
+    week, start, end = row
+    tomorrow = today + timedelta(days=1)
+    hi = max(end, plays_on) if plays_on else end
+    cur.execute(TEAM_GAMES_SQL, {"season": season_id, "lo": start, "hi": hi})
+    games = {}
+    for team_id, d in cur.fetchall():
+        games.setdefault(team_id, set()).add(d)
+    cur.close()
+    return {"week": week, "start": start, "end": end, "tomorrow": tomorrow, "games": games}
+
+
+def fetch_player_teams(conn, nba_ids):
+    """{nba_player_id: (team_id or None, source)}.
+    nba_player_current_team lists only players on an NBA roster right now, so once it is populated
+    (400+ rows) a player missing from it is NOT on a team: ('no team'). That also flags retirees.
+    Only if the table is empty or missing do we fall back to the team of his latest game_logs row
+    ('last game'), which can be stale after a trade or signing."""
+    ids = [i for i in nba_ids if i is not None]
+    out = {}
+    cur = conn.cursor()
+    populated = False
+    try:
+        cur.execute("SELECT COUNT(*) FROM nba_player_current_team")
+        populated = cur.fetchone()[0] >= 400
+        cur.execute(CURRENT_TEAM_SQL, {"ids": ids})
+        for pid, tid in cur.fetchall():
+            out[pid] = (tid, "current") if tid else (None, "no team")
+    except Exception:
+        conn.rollback()  # table not created yet
+    missing = [i for i in ids if i not in out]
+    if populated:
+        for pid in missing:
+            out[pid] = (None, "no team")
+    elif missing:
+        cur.execute(LAST_TEAM_SQL, {"ids": missing})
+        for pid, tid in cur.fetchall():
+            out[pid] = (tid, "last game")
+    cur.close()
+    return out
+
+
+def schedule_view(ctx, team_id, plays_on):
+    """What the output needs for one team: games left (tomorrow..week end), the Mon..Sun strip,
+    whether it plays tomorrow, and whether it plays on the --plays-on date."""
+    dates = ctx["games"].get(team_id, set()) if team_id else set()
+    strip = ""
+    d = ctx["start"]
+    while d <= ctx["end"]:
+        if d >= ctx["tomorrow"]:
+            strip += "x" if d in dates else "."
+        else:
+            strip += "o" if d in dates else "-"
+        d += timedelta(days=1)
+    left = sum(1 for d in dates if ctx["tomorrow"] <= d <= ctx["end"])
+    return {"left": left, "strip": strip, "tomorrow": ctx["tomorrow"] in dates,
+            "plays_on": (plays_on in dates) if plays_on else None}
+
+
+def parse_plays_on(text, today):
+    if text is None:
+        return None
+    if text.lower() == "tomorrow":
+        return today + timedelta(days=1)
+    return date.fromisoformat(text)
 
 
 def fetch_class_stats(conn):
@@ -213,7 +316,7 @@ def suggest(stats, rivals, my_roster_id, big_bid, min_big_wins, min_big_share, m
             "my_remaining": my_remaining}
 
 
-def print_advice(rows, rivals, args, fit):
+def print_advice(rows, rivals, args, fit, sched=None):
     first = rows[0][2]
     print(f"\nWaiver bid advisor ({len(rows)} free agents shown). Your budget left: "
           f"{first['my_remaining'] if first['my_remaining'] is not None else 'unknown'}"
@@ -221,8 +324,10 @@ def print_advice(rows, rivals, args, fit):
     head = f"{'Player':<22} {'Tier':<8} {'SpikeBar':>8} {'Past n':>6} {'Med':>4} {'P90':>4} {'Max':>4}  {'Suggest':>10}"
     if fit:
         head += f" {'You +':>6}  {'Rivals who gain most':<34}"
+    if sched:
+        head += f" {'Left':>4} {'MTWTFSS':<8} {'Tmrw':<4}"
     print(head + "  Competition")
-    print("-" * (150 if fit else 112))
+    print("-" * ((150 if fit else 112) + (18 if sched else 0)))
     names = {r["roster_id"]: r["owner"] for r in rivals}
     for r, st, s, gains in rows:
         if st is None:
@@ -238,7 +343,13 @@ def print_advice(rows, rivals, args, fit):
                          reverse=True)[:3]
             wants = ", ".join(f"{names.get(rid, rid)} +{g:.1f}" for g, rid in top) or "-"
             line += f" {mine:>+6.1f}  {wants:<34}"
+        if sched:
+            sv = r["_sched"]
+            note = "" if sv["source"] == "current" else (" (no NBA team)" if sv["source"] == "no team" else " (last team)")
+            line += f" {sv['left']:>4} {sv['strip']:<8} {'Y' if sv['tomorrow'] else '-':<4}"
         comp = ("contested: " + ", ".join(s["big_bidders"])) if s["contested"] else "uncontested"
+        if sched and note:
+            comp += note
         if s["capped_by"]:
             comp += f"  [capped by {s['capped_by']}]"
         print(line + "  " + comp)
@@ -248,6 +359,10 @@ def print_advice(rows, rivals, args, fit):
     print("Suggest: uncontested = median..75th pct of past winning bids for that tier; contested = 75th..90th pct;")
     print("capped at your budget and at (richest rival's remaining + 1). 'thin' = fewer than "
           f"{args.min_sample} past claims in that tier. Heuristic, not a forecast.")
+    if sched:
+        print(f"Schedule: week {sched['week']} ({sched['start']} to {sched['end']}); Left = games from tomorrow to the week's end; "
+              "strip: 'o' played, '-' past no game, 'x' upcoming, '.' none. Today's games count as played. "
+              "'(last team)' = team of his last game, not confirmed current; '(no NBA team)' = not on a roster.")
     if fit:
         print("You + / Rivals: fantasy points per game the player adds to that team's best 9-man lineup "
               "(season averages; a rookie with no stats counts as 0).")
@@ -277,6 +392,10 @@ def main():
     ap.add_argument("--min-sample", type=int, default=5, help="past claims in a tier before it is not 'thin' (default 5)")
     ap.add_argument("--min-upgrade", type=float, default=2.0, help="lineup points per game a player must add to a big bidder to count as contested (default 2.0)")
     ap.add_argument("--no-fit", action="store_true", help="skip the lineup-fit calculation")
+    ap.add_argument("--no-schedule", action="store_true", help="skip the weekly schedule columns")
+    ap.add_argument("--plays-on", help="only players whose team plays on this day: 'tomorrow' or YYYY-MM-DD")
+    ap.add_argument("--sort", choices=["finder", "games"], default="finder", help="finder = spike bar (default); games = most games left first")
+    ap.add_argument("--today", help="pretend today is YYYY-MM-DD (testing; default: today in America/Chicago)")
     args = ap.parse_args()
 
     from db_connection import get_connection
@@ -288,6 +407,24 @@ def main():
         report = build_report(conn, league_id, args.season_id)
         if args.player:
             report = [r for r in report if args.player.lower() in r["player_name"].lower()]
+        today = date.fromisoformat(args.today) if args.today else datetime.now(ZoneInfo("America/Chicago")).date()
+        plays_on = parse_plays_on(args.plays_on, today)
+        sched = None
+        if not args.no_schedule or plays_on:
+            sched = fetch_schedule_context(conn, args.season_id, today, plays_on)
+            if sched is None:
+                print(f"NOTE: {today} is not inside a fantasy week in fantasy_weeks; schedule columns skipped.")
+                if plays_on:
+                    sys.exit("--plays-on needs a fantasy week for today; nothing to filter.")
+            else:
+                teams = fetch_player_teams(conn, [r["nba_player_id"] for r in report])
+                for r in report:
+                    tid, src = teams.get(r["nba_player_id"], (None, "no team"))
+                    r["_sched"] = {**schedule_view(sched, tid, plays_on), "source": src}
+                if plays_on:
+                    report = [r for r in report if r["_sched"]["plays_on"]]
+                if args.sort == "games":
+                    report.sort(key=lambda r: (-r["_sched"]["left"], -r["spike_bar"]))
         report = report[: args.limit]
         if not report:
             print("No matching free agents in the finder's report.")
@@ -308,7 +445,7 @@ def main():
         s = suggest(st, rivals, args.my_roster_id, args.big_bid, args.min_big_wins, args.min_big_share, args.min_sample,
                     gains=gains if fit else None, min_upgrade=args.min_upgrade)
         rows.append((r, st, s, gains))
-    print_advice(rows, rivals, args, fit)
+    print_advice(rows, rivals, args, fit, sched)
     print_rivals(rivals, args)
 
 
