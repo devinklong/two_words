@@ -72,7 +72,7 @@ ORDER BY (s.lock_signal = 'LOCK') DESC NULLS LAST, e.fantasy_score DESC
 
 # Every player on the roster: used to count how many games the rest of the roster has left.
 ROSTER_SQL = """
-SELECT ro.sleeper_player_id, ro.nba_player_id
+SELECT ro.sleeper_player_id, ro.nba_player_id, COALESCE(ro.player_name, 'sleeper id ' || ro.sleeper_player_id)
 FROM roster_ownership ro
 WHERE ro.roster_id = %(roster)s
   AND ro.league_id = (SELECT league_id FROM sleeper_current_league)
@@ -113,10 +113,14 @@ def format_rows(rows):
 
 def recommend_slots(conn, rows, args, day):
     """Fills r['slot'] for LOCK rows; returns (ctx_ok, notes, supply)."""
-    from waiver_bid_advisor import fetch_schedule_context, fetch_player_teams, POSITIONS_SQL
+    from waiver_bid_advisor import fetch_schedule_context, fetch_player_teams, fetch_taxi, POSITIONS_SQL
     from lineup_fit import slot_supply, recommend_lock_slots
 
-    lockers = [r for r in rows if r["signal"] == "LOCK"]
+    cur0 = conn.cursor()
+    cur0.execute("SELECT league_id FROM sleeper_current_league")
+    taxi = fetch_taxi(conn, cur0.fetchone()[0]).get(args.roster_id, set())
+    cur0.close()
+    lockers = [r for r in rows if r["signal"] == "LOCK" and r["sid"] not in taxi]
     if not lockers:
         return True, [], {}
     ctx = fetch_schedule_context(conn, args.season_id, day, None)
@@ -128,11 +132,11 @@ def recommend_slots(conn, rows, args, day):
     cur.execute(ROSTER_SQL, {"roster": args.roster_id})
     roster = cur.fetchall()
     cur.close()
-    teams = fetch_player_teams(conn, [nba for _sid, nba in roster])
+    teams = fetch_player_teams(conn, [nba for _sid, nba, _nm in roster])
     locker_ids = {r["nba_id"] for r in lockers}
     candidates = []
-    for sid, nba in roster:
-        if nba in locker_ids:
+    for sid, nba, _nm in roster:
+        if nba in locker_ids or sid in taxi:
             continue
         team_id = teams.get(nba, (None, None))[0]
         dates = ctx["games"].get(team_id, set()) if team_id else set()
@@ -149,6 +153,9 @@ def recommend_slots(conn, rows, args, day):
         r["slot"] = slot or "?"
         pos = "/".join(positions.get(r["sid"], [])) or "no position on file"
         notes.append(f"{r['name']} ({pos}): {slot or 'no slot'} - {why}")
+    taxi_names = [nm for sid, _nba, nm in roster if sid in taxi]
+    if taxi_names:
+        notes.append("On taxi, not lockable: " + ", ".join(taxi_names))
     return True, notes, supply
 
 
@@ -197,7 +204,7 @@ def main():
         print(f"Did not play ({len(sat)}): {', '.join(sat)}")
     print("LOCK = score at or above his lock bar. PASS = below it with no games left. HOLD = below it, games left.")
     print("Lock into: position slots before G/F before UTIL; among eligible ones, the slot with the fewest games left for the rest of your roster.")
-    print("Assumes every slot is open unless you pass --filled; counts every rostered player (no injury knowledge).")
+    print("Assumes every slot is open unless you pass --filled; counts every rostered player except taxi (no injury knowledge).")
     print("Lock % comes from his tier and games left only (not tonight's score); the signal comes from Score vs Bar.")
 
 

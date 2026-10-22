@@ -152,6 +152,21 @@ ORDER BY player_id, (season_id = %(cur)s AND games_played >= 20) DESC, season_id
 """
 
 
+def fetch_taxi(conn, league_id):
+    """{roster_id: set(sleeper_player_id)} of players on each roster's taxi squad.
+    Taxi players cannot be started, so they do not count toward games left or lineup fit.
+    Returns {} (and rolls back) if sleeper_rosters.taxi does not exist yet or has not been synced."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT roster_id, taxi FROM sleeper_rosters WHERE league_id = %s", (league_id,))
+        return {rid: set(t or []) for rid, t in cur.fetchall()}
+    except Exception:
+        conn.rollback()
+        return {}
+    finally:
+        cur.close()
+
+
 def fetch_fit_inputs(conn, league_id, season_id):
     """Returns (rosters, positions): rosters = {roster_id: [(value, positions), ...]}."""
     from lineup_fit import KNOWN_POSITIONS
@@ -164,8 +179,11 @@ def fetch_fit_inputs(conn, league_id, season_id):
     cur.execute(VALUES_SQL, {"cur": season_id, "prev": str(int(season_id) - 1)})
     values = {r[0]: float(r[1]) for r in cur.fetchall() if r[1] is not None}
     cur.execute(ROSTERS_SQL, {"league": league_id})
+    taxi = fetch_taxi(conn, league_id)
     rosters = {}
     for roster_id, _owner, sid, nba_id, _name in cur.fetchall():
+        if sid in taxi.get(roster_id, ()):
+            continue
         rosters.setdefault(roster_id, []).append((values.get(nba_id, 0.0), positions.get(sid, [])))
     cur.close()
     return rosters, positions

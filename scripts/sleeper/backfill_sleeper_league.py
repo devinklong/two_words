@@ -89,16 +89,19 @@ def upsert_league(cur, league):
 
 def upsert_rosters(cur, league_id):
     rosters = fetch(f"/league/{league_id}/rosters")
+    cur.execute("ALTER TABLE sleeper_rosters ADD COLUMN IF NOT EXISTS taxi text[]")
     for r in rosters:
         cur.execute("""
-            INSERT INTO sleeper_rosters (league_id, roster_id, owner_id, players, starters, settings)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO sleeper_rosters (league_id, roster_id, owner_id, players, starters, settings, taxi)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (league_id, roster_id) DO UPDATE SET
                 owner_id = EXCLUDED.owner_id, players = EXCLUDED.players,
-                starters = EXCLUDED.starters, settings = EXCLUDED.settings, synced_at = now();
+                starters = EXCLUDED.starters, settings = EXCLUDED.settings,
+                taxi = EXCLUDED.taxi, synced_at = now();
         """, (
             league_id, r["roster_id"], r.get("owner_id"),
             r.get("players") or [], r.get("starters") or [], json.dumps(r.get("settings")),
+            r.get("taxi") or [],
         ))
     return len(rosters)
 
