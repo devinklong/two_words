@@ -96,6 +96,8 @@ ORDER BY 1
 
 
 def signal_label(row):
+    if str(row.get("slot") or "").startswith("locked"):
+        return "LOCKED"   # already locked into a slot: no decision left (the model signal is still in row["signal"])
     return row["signal"] if row["signal"] else "no signal"
 
 
@@ -273,7 +275,7 @@ def main():
         print("No roster players have a game on that date. Has the daily load run for it?")
         return
     print("\n".join(format_rows(rows)))
-    counts = {k: sum(1 for r in rows if signal_label(r) == k) for k in ("LOCK", "HOLD", "PASS", "no signal")}
+    counts = {k: sum(1 for r in rows if signal_label(r) == k) for k in ("LOCK", "LOCKED", "HOLD", "PASS", "no signal")}
     if notes:
         print("\nWhere to lock:")
         for n in notes:
@@ -281,10 +283,10 @@ def main():
         if supply:
             order = ["PG", "SG", "SF", "PF", "C", "G", "F", "UTIL"]
             print("  Games left for the rest of your roster, by slot: " + ", ".join(f"{k} {supply[k]:g}" for k in order if k in supply))
-    print(f"\nLOCK {counts['LOCK']}, HOLD {counts['HOLD']}, PASS {counts['PASS']}, no signal {counts['no signal']}")
+    print(f"\nLOCK {counts['LOCK']} (open), LOCKED {counts['LOCKED']} (done), HOLD {counts['HOLD']}, PASS {counts['PASS']}, no signal {counts['no signal']}")
     if sat:
         print(f"Did not play ({len(sat)}): {', '.join(sat)}")
-    print("LOCK = score at or above his lock bar. PASS = below it with no games left. HOLD = below it, games left.")
+    print("LOCK = score at or above his lock bar (LOCKED = already locked into a slot). PASS = below it with no games left. HOLD = below it, games left.")
     print("Lock into: position slots before G/F before UTIL; among eligible ones, the slot with the fewest games left for the rest of your roster.")
     print("Assumes every slot is open unless you pass --filled; counts every rostered player except taxi (no injury knowledge).")
     print("Lock right: LOCK rows = how often a score this far above the bar was not beaten later that week (history);"
