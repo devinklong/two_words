@@ -138,8 +138,8 @@ def format_rows(rows):
     lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock right':>10}  {'Signal':<10} {'Lock into':<10} Note"]
     lines.append("-" * 108)
     for r in rows:
-        bar = f"{r['bar']:.1f}" if r["bar"] is not None else "-"
-        gap = f"{r['score'] - r['bar']:+.1f}" if r["bar"] is not None else "-"
+        bar = f"{r['bar']:.2f}" if r["bar"] is not None else "-"
+        gap = f"{r['score'] - r['bar']:+.2f}" if r["bar"] is not None else "-"
         pct = f"{r['lock_pct']*100:.0f}%" if r["lock_pct"] is not None else "-"
         note = ""
         if not r["signal"]:
@@ -148,7 +148,7 @@ def format_rows(rows):
             note = f"bar from {r['source']} stats"
         if r.get("hist_n"):
             note = (note + "; " if note else "") + f"{r['hist_n']} similar past locks"
-        lines.append(f"{'S' if r['starter'] else ' ':1} {r['name']:<24} {r['score']:>6.1f} {bar:>6} {gap:>6} "
+        lines.append(f"{'S' if r['starter'] else ' ':1} {r['name']:<24} {r['score']:>6.2f} {bar:>6} {gap:>6} "
                      f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {r.get('slot') or '':<10} {note}")
     return lines
 

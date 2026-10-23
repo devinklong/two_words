@@ -14,10 +14,10 @@ Usage (from ~/projects/two_words):  python scripts/infer_lock_decisions.py [--se
 """
 import argparse
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 SLOT_ORDER = ["PG", "SG", "G", "SF", "PF", "F", "C", "UTIL1", "UTIL2"]
-TOL = 0.06
+TOL = 0.01
 
 
 def match_game(points, games):
@@ -44,7 +44,7 @@ def infer_slot(states, games_by_player, week_end, checked_through):
         if g is None:
             continue
         # only the slot's CURRENT state can be confirmed frozen; a state that later changed was live (or swapped out)
-        later = [x for x in games if x["date"] > g["date"] and x["date"] <= r["until"].date() - timedelta(days=2)] if i == len(runs) - 1 else []
+        later = [x for x in games if x["date"] > g["date"] and x["date"] < r["until"].date()] if i == len(runs) - 1 else []
         if later:
             return r, g, "sleeper_frozen"
         if i == len(runs) - 1 and checked_through.date() > week_end:
@@ -105,7 +105,7 @@ def main():
                            WHERE g.game_id = %s AND g.player_id = %s""", (g["id"], r["nba"]))
             m = cur.fetchone() or (g["score"], None, None, None, None, None, None)
             name = (xw.get(r["pid"]) or (None, r["pid"]))[1]
-            print(f"  week {week} roster {roster:>2} {slot:<5} {name}  {float(g['score']):.1f} on {g['date']}  [{reason}]")
+            print(f"  week {week} roster {roster:>2} {slot:<5} {name}  {float(g['score']):.2f} on {g['date']}  [{reason}]")
             total += 1
             if args.dry_run:
                 continue

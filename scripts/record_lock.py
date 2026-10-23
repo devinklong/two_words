@@ -140,9 +140,9 @@ def main():
                                  "left": left})
         conn.commit()
         extra = f"  (note: {name} is also recorded in {', '.join(again)} this week)" if again else ""
-        print(f"Recorded: {name} {float(score):.1f} on {day} -> {slot}, week {week}. "
-              f"Model said {signal or 'no signal'} (bar {float(bar):.1f})." if bar is not None else
-              f"Recorded: {name} {float(score):.1f} on {day} -> {slot}, week {week}. Model had no signal.")
+        print(f"Recorded: {name} {float(score):.2f} on {day} -> {slot}, week {week}. "
+              f"Model said {signal or 'no signal'} (bar {float(bar):.2f})." if bar is not None else
+              f"Recorded: {name} {float(score):.2f} on {day} -> {slot}, week {week}. Model had no signal.")
         if extra: print(extra)
     cur.close()
     conn.close()
