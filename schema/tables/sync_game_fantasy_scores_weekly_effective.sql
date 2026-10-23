@@ -68,6 +68,48 @@ LEFT JOIN game_fantasy_scores_weekly_effective existing
     ON existing.player_id = gfsw.player_id AND existing.game_id = gfsw.game_id
 WHERE existing.player_id IS NULL;
 
+-- ADDED 10/22/26: SELF-CORRECTION of recent rows. The INSERT above only ever adds missing rows, so a row
+-- written before the NBA published all of a week's games (e.g. the NBA Cup knockout games in December)
+-- kept a too-low games_remaining / effective_games_remaining forever. This UPDATE re-derives the
+-- schedule-based columns for rows whose week ended within the last 21 days and fixes any that differ,
+-- so a late schedule addition is picked up on the next daily run. Older weeks still need the manual
+-- DELETE + re-run described in docs/daily_runbook.md. Only these five schedule-derived columns are touched.
+-- Must stay the LAST statement before the "-- ====" divider: the Python wrapper reads its rowcount.
+UPDATE game_fantasy_scores_weekly_effective existing
+SET games_before_in_week            = src.games_before_in_week,
+    games_remaining_in_week         = src.games_remaining_in_week,
+    total_team_games_this_week      = src.total_team_games_this_week,
+    is_last_game_of_week            = src.is_last_game_of_week,
+    effective_games_remaining_in_week = src.effective_games_remaining_in_week
+FROM (
+    SELECT
+        gfsw.player_id, gfsw.game_id,
+        gfsw.games_before_in_week, gfsw.games_remaining_in_week,
+        gfsw.total_team_games_this_week, gfsw.is_last_game_of_week,
+        (
+            SELECT COALESCE(ROUND(SUM(
+                CASE WHEN b2b.is_second_night_of_b2b THEN 0.9805 ELSE 1.0 END
+            ), 3), 0)
+            FROM team_schedule_b2b_flags b2b
+            WHERE b2b.team_id = gfsw.team_id
+              AND b2b.season_id = gfsw.season_id
+              AND b2b.game_date > gfsw.game_date
+              AND b2b.game_date BETWEEN gfsw.week_start_date AND gfsw.week_end_date
+        ) AS effective_games_remaining_in_week
+    FROM game_fantasy_scores_weekly_full gfsw
+    WHERE gfsw.week_end_date >= CURRENT_DATE - 21
+) src
+WHERE existing.player_id = src.player_id
+  AND existing.game_id = src.game_id
+  AND existing.week_end_date >= CURRENT_DATE - 21
+  AND (existing.games_before_in_week, existing.games_remaining_in_week,
+       existing.total_team_games_this_week, existing.is_last_game_of_week,
+       existing.effective_games_remaining_in_week)
+      IS DISTINCT FROM
+      (src.games_before_in_week, src.games_remaining_in_week,
+       src.total_team_games_this_week, src.is_last_game_of_week,
+       src.effective_games_remaining_in_week);
+
 -- =========================
 -- Verification
 -- =========================

@@ -19,15 +19,18 @@ def sync_game_fantasy_scores_weekly_effective(conn) -> int:
     before = _row_count(conn)
     sql_text = SQL_PATH.read_text()
 
-    # The file has one INSERT statement followed by verification SELECTs --
-    # only the INSERT needs executing here (the SELECTs are for manual
+    # The file has an INSERT and an UPDATE (self-correction of recent rows) followed by
+    # verification SELECTs -- only those two need executing here (the SELECTs are for manual
     # psql runs); split on the first "-- ====" divider to isolate it.
     insert_sql = sql_text.split("-- =========================")[0]
 
     cur = conn.cursor()
     cur.execute(insert_sql)
+    corrected = cur.rowcount  # the UPDATE is the last statement before the divider
     conn.commit()
     cur.close()
+    if corrected > 0:
+        print(f"  Corrected {corrected} recent weekly-effective row(s) whose schedule-based numbers had changed.")
 
     after = _row_count(conn)
     return after - before

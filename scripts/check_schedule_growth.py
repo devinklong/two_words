@@ -63,7 +63,8 @@ def main():
         print("  First check: recorded as the baseline.")
     elif total > last[0]:
         print(f"  WARN: schedule grew by {total - last[0]} games since {last[1]:%Y-%m-%d} ({last[0]} -> {total}).")
-        print("  Stored 'games remaining in week' rows for the affected weeks are now too low. Rebuild them:")
+        print("  The daily weekly-effective sync now repairs rows from the last 21 days by itself (look for 'Corrected N').")
+        print("  Only if an OLDER week gained games, rebuild it by hand:")
         print(REBUILD)
     elif total < last[0]:
         print(f"  WARN: schedule SHRANK by {last[0] - total} games since {last[1]:%Y-%m-%d} ({last[0]} -> {total}). "
