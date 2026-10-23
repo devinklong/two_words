@@ -131,6 +131,11 @@ If a step times out or the terminal hangs, set a query limit first:
       "Lock into" rule: position slots (PG/SG/SF/PF/C) before G/F before UTIL. When a player fits several
       slots in a tier, he goes in the slot with the FEWEST games left for the rest of your roster (e.g. a PG/SG
       goes to SG if your PG-eligible players have more games coming). Biggest score-over-bar gets first pick.
+      "Lock right" column (10/23/26): chance that locking the score now is the right call. LOCK rows use history
+      (view `nba_lock_win_rate`: how often a score this far above the bar, same tier and games left, was not beaten
+      by a later game that week; the Note shows the number of past cases). HOLD/PASS rows use the fitted curve
+      (`percentage_to_lock`), which was built only from below-bar scores and so is not valid for LOCK rows.
+      Create the view once: `psql -d postgres -f models/nba_lock_win_rate.sql` (the rebuild pipeline recreates it).
       Caveats: the DB has no record of which slots you already locked (hence --filled), and games left
       ignore injuries/rest. Also runs as a log-only smoke step in run_daily.py.
    d. Matchup analysis (your roster_id is 8):

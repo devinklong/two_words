@@ -254,6 +254,7 @@ def main():
     run_step("models/ownable_player_pool.sql", "ownable_player_pool", "view")
     run_step("models/lock_bar_function.sql", "lock_bar", "function")
     run_step("models/game_lock_signal.sql", "game_lock_signal", "view")
+    run_step("models/nba_lock_win_rate.sql", "nba_lock_win_rate", "view")
 
     print("\nRunning final regression check against known-good values...")
     if not verify_against_known_good():

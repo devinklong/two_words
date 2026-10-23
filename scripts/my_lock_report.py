@@ -15,8 +15,12 @@ Columns:
   Bar     the lock bar for him (score at or above it = LOCK)
   Gap     score minus bar
   Left    games his team still has this fantasy week (effective, after back-to-back adjustment)
-  Lock %  the model's percentage_to_lock. It depends only on his tier and games left, NOT on the
-          score he just posted, so a LOCK can show a low number; the LOCK/HOLD call comes from Score vs Bar
+  Lock right  the chance that locking this score now turns out to be the right call (changed 10/23/26):
+          LOCK rows: from history, how often a score at/above the bar in the same tier, with the same
+          games left and about this far above the bar, was NOT beaten by a later game that week
+          (view nba_lock_win_rate; the Note shows how many past cases it is based on).
+          HOLD / PASS rows: the model's percentage_to_lock (a fitted curve on tier and games left, built
+          only from below-bar scores, which is why it is NOT used for LOCK rows). 0 games left = 100%.
   Signal  LOCK (score >= bar) / PASS (below bar and no games left) / HOLD (below bar, games left)
   Lock into  for LOCK rows: which lineup slot to lock the score into (added 10/22/26). Rule: use a
           position slot (PG/SG/SF/PF/C) before G/F, and G/F before UTIL. If he fits more than
@@ -94,9 +98,44 @@ def signal_label(row):
     return row["signal"] if row["signal"] else "no signal"
 
 
+RATE_SQL = "SELECT tier, games_left, above_bar, n, lock_was_right FROM nba_lock_win_rate"
+
+
+def gap_bucket(gap):
+    """Same cut points as the above_bar buckets in models/nba_lock_win_rate.sql."""
+    return "a 0-5" if gap < 5 else "b 5-10" if gap < 10 else "c 10-15" if gap < 15 else "d 15+"
+
+
+def apply_lock_right(conn, rows):
+    """For LOCK rows replace lock_pct with the historical rate that locking a score this far above the bar was
+    right. Returns False if the view is missing, in which case rows keep the old percentage_to_lock."""
+    cur = conn.cursor()
+    try:
+        cur.execute(RATE_SQL)
+        table = {(t, int(k), b): (int(n), float(rate)) for t, k, b, n, rate in cur.fetchall()}
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        cur.close()
+    for r in rows:
+        if r["signal"] != "LOCK" or r["bar"] is None:
+            continue
+        k = int(round(r["left"]))
+        if k <= 0:
+            r["lock_pct"] = 1.0
+            continue
+        hit = table.get((r["tier"], min(k, 3), gap_bucket(r["score"] - r["bar"])))
+        if hit:
+            r["hist_n"], r["lock_pct"] = hit
+        else:
+            r["lock_pct"] = None
+    return True
+
+
 def format_rows(rows):
-    lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock %':>7}  {'Signal':<10} {'Lock into':<9} Note"]
-    lines.append("-" * 104)
+    lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock right':>10}  {'Signal':<10} {'Lock into':<9} Note"]
+    lines.append("-" * 107)
     for r in rows:
         bar = f"{r['bar']:.1f}" if r["bar"] is not None else "-"
         gap = f"{r['score'] - r['bar']:+.1f}" if r["bar"] is not None else "-"
@@ -106,8 +145,10 @@ def format_rows(rows):
             note = "no baseline yet (rookie / under 20 games)"
         elif r["source"] and r["source"] != "season":
             note = f"bar from {r['source']} stats"
+        if r.get("hist_n"):
+            note = (note + "; " if note else "") + f"{r['hist_n']} similar past locks"
         lines.append(f"{'S' if r['starter'] else ' ':1} {r['name']:<24} {r['score']:>6.1f} {bar:>6} {gap:>6} "
-                     f"{r['left']:>5.1f} {pct:>7}  {signal_label(r):<10} {r.get('slot') or '':<9} {note}")
+                     f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {r.get('slot') or '':<9} {note}")
     return lines
 
 
@@ -182,6 +223,7 @@ def main():
     sat = [r[0] for r in cur.fetchall()]
     cur.close()
     notes, supply = [], {}
+    rate_ok = apply_lock_right(conn, rows) if rows else True
     if rows:
         _ok, notes, supply = recommend_slots(conn, rows, args, date.fromisoformat(day))
     conn.close()
@@ -205,7 +247,11 @@ def main():
     print("LOCK = score at or above his lock bar. PASS = below it with no games left. HOLD = below it, games left.")
     print("Lock into: position slots before G/F before UTIL; among eligible ones, the slot with the fewest games left for the rest of your roster.")
     print("Assumes every slot is open unless you pass --filled; counts every rostered player except taxi (no injury knowledge).")
-    print("Lock % comes from his tier and games left only (not tonight's score); the signal comes from Score vs Bar.")
+    print("Lock right: LOCK rows = how often a score this far above the bar was not beaten later that week (history);"
+          " HOLD/PASS rows = the fitted below-bar curve (tier and games left). The signal itself comes from Score vs Bar.")
+    if not rate_ok:
+        print("NOTE: view nba_lock_win_rate not found, so LOCK rows still show the old curve value (not meaningful for locks)."
+              " Create it: psql -d postgres -f models/nba_lock_win_rate.sql")
 
 
 if __name__ == "__main__":
