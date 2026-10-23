@@ -28,14 +28,15 @@ Columns:
           roster, because it is the hardest to fill later (e.g. a PG/SG when PG-eligible players
           have more games coming than SG-eligible ones -> SG). Games left count every other
           player on your roster (no injury or lineup knowledge) from the day after the report date
-          through the end of the fantasy week. The database does not record which slots you
-          already locked this week, so pass --filled SLOT,SLOT (e.g. --filled PG,UTIL) to remove them.
+          through the end of the fantasy week. Slots you already locked are read from
+          nba_lock_decisions (record them with scripts/record_lock.py); --filled / --locked still work as overrides.
 Starters ('S') are the players in your lineup now.
 
 Run (from project root):
     python scripts/my_lock_report.py                 (yesterday, roster 8)
     python scripts/my_lock_report.py --date 2026-10-20
     python scripts/my_lock_report.py --filled PG,UTIL   (slots you have already locked this week)
+    python scripts/my_lock_report.py --locked Mitchell=PG,Zubac=C   (same, naming the players; also hides them from the advice)
     python scripts/my_lock_report.py --roster-id 8 --season-id 22026
 """
 
@@ -134,8 +135,8 @@ def apply_lock_right(conn, rows):
 
 
 def format_rows(rows):
-    lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock right':>10}  {'Signal':<10} {'Lock into':<9} Note"]
-    lines.append("-" * 107)
+    lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock right':>10}  {'Signal':<10} {'Lock into':<10} Note"]
+    lines.append("-" * 108)
     for r in rows:
         bar = f"{r['bar']:.1f}" if r["bar"] is not None else "-"
         gap = f"{r['score'] - r['bar']:+.1f}" if r["bar"] is not None else "-"
@@ -148,36 +149,73 @@ def format_rows(rows):
         if r.get("hist_n"):
             note = (note + "; " if note else "") + f"{r['hist_n']} similar past locks"
         lines.append(f"{'S' if r['starter'] else ' ':1} {r['name']:<24} {r['score']:>6.1f} {bar:>6} {gap:>6} "
-                     f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {r.get('slot') or '':<9} {note}")
+                     f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {r.get('slot') or '':<10} {note}")
     return lines
 
 
 def recommend_slots(conn, rows, args, day):
     """Fills r['slot'] for LOCK rows; returns (ctx_ok, notes, supply)."""
     from waiver_bid_advisor import fetch_schedule_context, fetch_player_teams, fetch_taxi, POSITIONS_SQL
-    from lineup_fit import slot_supply, recommend_lock_slots
+    from lineup_fit import slot_supply, recommend_lock_slots, SLOTS
 
     cur0 = conn.cursor()
     cur0.execute("SELECT league_id FROM sleeper_current_league")
     taxi = fetch_taxi(conn, cur0.fetchone()[0]).get(args.roster_id, set())
+    cur0.execute(ROSTER_SQL, {"roster": args.roster_id})
+    roster = cur0.fetchall()
     cur0.close()
-    lockers = [r for r in rows if r["signal"] == "LOCK" and r["sid"] not in taxi]
+
+    # --locked "Mitchell=PG,Zubac=C": players you already locked into a slot. Their slot is used up and their
+    # remaining games no longer matter, so they are left out of the advice and out of the games-left counts.
+    notes, locked_by_sid = [], {}
+    # Locks recorded with scripts/record_lock.py (table nba_lock_decisions) for this fantasy week count automatically.
+    try:
+        cur0 = conn.cursor()
+        cur0.execute("""SELECT d.sleeper_player_id, d.player_name, d.slot FROM nba_lock_decisions d
+                       JOIN fantasy_weeks w ON w.season_id = d.season_id AND w.week_number = d.week_number
+                       WHERE d.roster_id = %s AND d.season_id = %s AND %s BETWEEN w.week_start_date AND w.week_end_date""",
+                     (args.roster_id, args.season_id, day))
+        for sid, nm, sl in cur0.fetchall():
+            locked_by_sid[sid] = (nm, sl.rstrip("12") if sl.startswith("UTIL") else sl)
+        cur0.close()
+        if locked_by_sid:
+            notes.append(f"{len(locked_by_sid)} lock(s) read from nba_lock_decisions")
+    except Exception:
+        conn.rollback()
+    for item in (args.locked.split(",") if args.locked else []):
+        if "=" not in item:
+            notes.append(f"--locked '{item.strip()}' ignored: use NAME=SLOT, e.g. Mitchell=PG")
+            continue
+        frag, slot = (x.strip() for x in item.split("=", 1))
+        slot = slot.upper()
+        hits = [(sid, nm) for sid, _nba, nm in roster if frag.lower() in nm.lower()]
+        if slot not in SLOTS:
+            notes.append(f"--locked '{item.strip()}' ignored: '{slot}' is not one of {sorted(set(SLOTS))}")
+        elif len(hits) != 1:
+            notes.append(f"--locked '{item.strip()}' ignored: '{frag}' matched {len(hits)} players on your roster")
+        else:
+            locked_by_sid[hits[0][0]] = (hits[0][1], slot)
+    for r in rows:
+        if r["sid"] in locked_by_sid:
+            r["slot"] = f"locked {locked_by_sid[r['sid']][1]}"
+    if locked_by_sid:
+        notes.append("Already locked: " + ", ".join(f"{nm}={sl}" for nm, sl in locked_by_sid.values()))
+
+    lockers = [r for r in rows if r["signal"] == "LOCK" and r["sid"] not in taxi and r["sid"] not in locked_by_sid]
     if not lockers:
-        return True, [], {}
+        return True, notes, {}
     ctx = fetch_schedule_context(conn, args.season_id, day, None)
     if ctx is None:
-        return False, ["Slot advice skipped: that date is not inside a fantasy week."], {}
+        return False, notes + ["Slot advice skipped: that date is not inside a fantasy week."], {}
     cur = conn.cursor()
     cur.execute(POSITIONS_SQL)
     positions = {sid: list(ps) for sid, ps in cur.fetchall()}
-    cur.execute(ROSTER_SQL, {"roster": args.roster_id})
-    roster = cur.fetchall()
     cur.close()
     teams = fetch_player_teams(conn, [nba for _sid, nba, _nm in roster])
     locker_ids = {r["nba_id"] for r in lockers}
     candidates = []
     for sid, nba, _nm in roster:
-        if nba in locker_ids or sid in taxi:
+        if nba in locker_ids or sid in taxi or sid in locked_by_sid:
             continue
         team_id = teams.get(nba, (None, None))[0]
         dates = ctx["games"].get(team_id, set()) if team_id else set()
@@ -185,10 +223,10 @@ def recommend_slots(conn, rows, args, day):
         candidates.append((positions.get(sid, []), left))
     supply = slot_supply(candidates)
     filled = [x.strip().upper() for x in args.filled.split(",") if x.strip()] if args.filled else []
+    filled += [sl for _nm, sl in locked_by_sid.values()]
     rec = recommend_lock_slots(
         [{"name": r["name"], "positions": positions.get(r["sid"], []), "gap": r["score"] - (r["bar"] or 0)} for r in lockers],
         supply, filled)
-    notes = []
     for r in lockers:
         slot, why = rec[r["name"]]
         r["slot"] = slot or "?"
@@ -206,6 +244,8 @@ def main():
     ap.add_argument("--roster-id", type=int, default=MY_ROSTER_ID)
     ap.add_argument("--season-id", default="22026")
     ap.add_argument("--filled", help="slots already locked this week, comma separated, e.g. PG,UTIL")
+    ap.add_argument("--locked", help="players you already locked, as NAME=SLOT comma separated, e.g. Mitchell=PG,Zubac=C "
+                                     "(their slot counts as filled and they drop out of the advice)")
     args = ap.parse_args()
 
     day = args.date or (datetime.now(ZoneInfo("America/Chicago")).date() - timedelta(days=1)).isoformat()

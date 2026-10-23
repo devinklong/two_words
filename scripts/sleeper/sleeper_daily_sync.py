@@ -63,6 +63,8 @@ def sync_matchup_points_snapshot(cur, league_id, weeks):
     (checked_count, inserted_count) so callers can report how many
     roster/weeks were checked vs. how many actually changed."""
     total_checked, total_inserted = 0, 0
+    # starters = who is in each slot (slot order); needed to infer locks (scripts/infer_lock_decisions.py)
+    cur.execute("ALTER TABLE sleeper_matchup_points_snapshots ADD COLUMN IF NOT EXISTS starters text[]")
 
     for week in weeks:
         matchups = fetch(f"/league/{league_id}/matchups/{week}")
@@ -74,10 +76,11 @@ def sync_matchup_points_snapshot(cur, league_id, weeks):
             points = m.get("points")
             starters_points = m.get("starters_points") or []
             players_points = m.get("players_points") or {}
+            starters = m.get("starters") or []
             total_checked += 1
 
             cur.execute("""
-                SELECT points, starters_points, players_points
+                SELECT points, starters_points, players_points, starters
                 FROM sleeper_matchup_points_snapshots
                 WHERE league_id = %s AND week = %s AND roster_id = %s
                 ORDER BY synced_at DESC
@@ -90,16 +93,17 @@ def sync_matchup_points_snapshot(cur, league_id, weeks):
                 or last[0] != points
                 or list(last[1] or []) != list(starters_points)
                 or (last[2] or {}) != players_points
+                or list(last[3] or []) != list(starters)
             )
 
             if changed:
                 cur.execute("""
                     INSERT INTO sleeper_matchup_points_snapshots
-                        (league_id, week, roster_id, points, starters_points, players_points)
-                    VALUES (%s, %s, %s, %s, %s, %s);
+                        (league_id, week, roster_id, points, starters_points, players_points, starters)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
                 """, (
                     league_id, week, roster_id, points,
-                    starters_points, json.dumps(players_points),
+                    starters_points, json.dumps(players_points), starters,
                 ))
                 total_inserted += 1
 

@@ -101,6 +101,8 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         ("backfill missing players", [PY, "scripts/ingestion/backfill_missing_players.py"], True),
         *([("sleeper crosswalk", [PY, "scripts/sleeper/build_sleeper_player_crosswalk.py"], False)] if run_crosswalk else []),
         ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
+        ("table nba_lock_decisions (additive)", [*psql, "-f", "schema/tables/nba_lock_decisions.sql"], False),
+        ("infer locks from sleeper snapshots", [PY, "scripts/infer_lock_decisions.py", "--season-id", str(season_id)], False),
         ("independent verify", [PY, "scripts/verify_current_league_independently.py", *wk], False),
         ("current teams table", [*psql, "-f", "schema/tables/nba_player_current_team.sql"], False),
         ("current teams (nba_api snapshot)", [PY, "scripts/ingestion/load_current_teams.py", "--write"], True),
