@@ -313,7 +313,7 @@ def check_nba_side(conn, season_id):
         report("SKIP", "fantasy_weeks (column guess?)", err)
     else:
         report("OK" if n == EXPECTED_WEEKS else "FAIL", "fantasy_weeks rows",
-               f"{n} (expected {EXPECTED_WEEKS}; regen schema/fantasy_weeks.sql if wrong)")
+               f"{n} (expected {EXPECTED_WEEKS}; regen schema/tables/fantasy_weeks.sql if wrong)")
 
 
 # =========================
