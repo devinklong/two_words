@@ -174,13 +174,14 @@ Run it AFTER the last West Coast game has finished (morning is fine).
   `tier_source_season_id` shows which season a tier came from. If the chain
   ever returns 0 rows for the current season again, check
   `SELECT season_id, COUNT(*) FROM nba_player_tiers_in_use GROUP BY 1`.
-- Weekly-effective rows are never updated. They copy games-remaining counts
-  at insert time. Weeks that contain not-yet-published games (the Cup
-  knockout round: weeks of Nov 30 and Dec 7, plus the unscheduled 24 games
-  afterward) will undercount remaining games until the schedule is complete.
-  Once the NBA publishes them and the loader has run, delete and resync the
-  affected rows:
-  `psql -d postgres -c "DELETE FROM game_fantasy_scores_weekly_effective WHERE season_id = '22026' AND game_date >= '2026-11-30'"`
+- Weekly-effective rows used to be insert-only; they now SELF-CORRECT (10/22/26). They copy games-remaining
+  counts at insert time, so a week with not-yet-published games (the NBA Cup knockout games, early/mid
+  December) was stored too low. The sync SQL now also runs an UPDATE over rows whose week ended within the
+  last 21 days and fixes any whose schedule-based columns (games_before/remaining, total team games,
+  is_last_game_of_week, effective games remaining) differ from the current schedule. So once the NBA
+  publishes the games and the loader has run, the next daily run repairs the last 3 weeks by itself
+  (it logs "Corrected N recent weekly-effective row(s)"). Only a fix needed for an OLDER week still takes
+  the manual route: `psql -d postgres -c "DELETE FROM game_fantasy_scores_weekly_effective WHERE season_id = '22026' AND game_date >= '<week start>'"`
   then `python scripts/sync_game_fantasy_scores_weekly_effective.py`.
 - Rookies and the lock signal. A rookie has no tier until he has a prior
   season (or 100 players are ranked this year), so he gets no LOCK/HOLD call
@@ -220,10 +221,10 @@ Check speed after a rebuild: `\timing` then `SELECT COUNT(*) FROM game_lock_sign
 ## Schedule growth check (added 10/22/26)
 The NBA has published 80 of 82 games per team; the NBA Cup knockout games (24) appear later (likely
 late Nov / early Dec). `scripts/check_schedule_growth.py` runs in the daily run (log only), records the
-schedule size in `nba_schedule_count_log` when it changes, and prints a WARN with the rebuild commands when it GROWS.
-When you see that WARN: delete `game_fantasy_scores_weekly_effective` rows from the earliest affected week
-(default '2026-11-30') and rerun `python scripts/sync_game_fantasy_scores_weekly_effective.py`.
-Look for it in `scripts/logs/daily_<date>.log` (grep -n WARN).
+schedule size in `nba_schedule_count_log` when it changes, and prints a WARN when it GROWS. Since the weekly-effective
+sync now self-corrects the last 21 days, the WARN is mainly a heads-up that the next daily run will repair rows
+(look for "Corrected N ..." in the log); it only requires the manual DELETE + resync if a week older than 3 weeks changed.
+Look for it in `scripts/logs/daily_<date>.log` (grep -n "WARN\|Corrected").
 
 ## Weekly / occasional
 
