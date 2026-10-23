@@ -236,6 +236,7 @@ def main():
     run_step("models/player_tiers.sql", "player_tiers", "view")
     run_step("schema/views/game_fantasy_scores_weekly_view.sql", "game_fantasy_scores_weekly", "view")
     run_step("schema/views/game_fantasy_scores_weekly_context_view.sql", "game_fantasy_scores_weekly_full", "view")
+    run_step("schema/views/nba_player_tiers_in_use.sql", "nba_player_tiers_in_use", "view")
     print("Running schema/tables/sync_game_fantasy_scores_weekly_effective.sql...")
     log_path = run_psql_quiet("schema/tables/sync_game_fantasy_scores_weekly_effective.sql")
     print(f"  done. (full output: {log_path})")
