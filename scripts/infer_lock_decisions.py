@@ -26,7 +26,7 @@ def match_game(points, games):
     return hits[0] if len(hits) == 1 else None
 
 
-def infer_slot(states, games_by_player, week_end, checked_through):
+def infer_slot(states, games_by_player, week_end, checked_through, include_frozen=False):
     """states: time-ordered [(ts, sleeper_pid, nba_pid, points)] for ONE slot (consecutive duplicates already merged
     into runs by this function). Returns (state, game, reason) for the first confirmed lock, else None."""
     runs = []
@@ -45,7 +45,7 @@ def infer_slot(states, games_by_player, week_end, checked_through):
             continue
         # only the slot's CURRENT state can be confirmed frozen; a state that later changed was live (or swapped out)
         later = [x for x in games if x["date"] > g["date"] and x["date"] < r["until"].date()] if i == len(runs) - 1 else []
-        if later:
+        if later and include_frozen:   # off by default: unlocked slots can show a stale score for days (Holmgren, Queen)
             return r, g, "sleeper_frozen"
         if i == len(runs) - 1 and checked_through.date() > week_end:
             return r, g, "sleeper_final"
@@ -57,6 +57,7 @@ def main():
     ap.add_argument("--season-id", default="22026")
     ap.add_argument("--week", type=int)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--include-frozen", action="store_true", help="also infer MID-WEEK locks from frozen slots (unreliable; off by default)")
     args = ap.parse_args()
 
     from db_connection import get_connection
@@ -93,7 +94,7 @@ def main():
                 sid = starters[i]
                 per_slot[(roster, slot)].append((ts, sid, (xw.get(sid) or (None, None))[0], pts[i]))
         for (roster, slot), states in per_slot.items():
-            res = infer_slot(states, games, week_end, now)
+            res = infer_slot(states, games, week_end, now, args.include_frozen)
             if not res:
                 continue
             r, g, reason = res

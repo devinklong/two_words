@@ -72,6 +72,14 @@ LEFT JOIN game_lock_signal s
   ON s.game_id = e.game_id AND s.player_id = e.player_id
 WHERE ro.roster_id = %(roster)s
   AND ro.league_id = (SELECT league_id FROM sleeper_current_league)
+  -- not players you picked up AFTER that game (you could not lock a score from before you owned him)
+  AND NOT EXISTS (SELECT 1 FROM sleeper_transactions t
+                  WHERE t.league_id = ro.league_id AND t.status = 'complete'
+                    AND t.adds ->> ro.sleeper_player_id = ro.roster_id::text
+                    -- waivers process overnight AFTER the claim is placed, so a claim made on or after the game's day
+                    -- was not yours yet; other adds (trades) take effect when created
+                    AND ((COALESCE(t.type, '') = 'waiver' AND t.created::date >= e.game_date)
+                         OR (COALESCE(t.type, '') <> 'waiver' AND t.created::date > e.game_date)))
 ORDER BY (s.lock_signal = 'LOCK') DESC NULLS LAST, e.fantasy_score DESC
 """
 
