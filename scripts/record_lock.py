@@ -52,6 +52,8 @@ def main():
     ap.add_argument("--season-id", default="22026")
     ap.add_argument("--week", type=int, help="fantasy week (for --list / --remove)")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--from-sleeper", metavar="NAMES", help="comma-separated names you have locked: reads each one's slot and score from "
+                    "your Sleeper lineup and finds the game by its score (no --date needed). Use --week N for a past week.")
     ap.add_argument("--remove", metavar="SLOT")
     ap.add_argument("--replace", action="store_true")
     ap.add_argument("--force", action="store_true")
@@ -92,13 +94,49 @@ def main():
         print("  still open: " + (", ".join(open_slots) or "none"))
         return
 
-    if not args.locks:
-        raise SystemExit("Nothing to record. Example: python scripts/record_lock.py Mitchell=PG --date 2026-10-22")
+    if not args.locks and not args.from_sleeper:
+        raise SystemExit("Nothing to record. Example: python scripts/record_lock.py Mitchell=PG --date 2026-10-22\n"
+                         "or:  python scripts/record_lock.py --from-sleeper Castle,Mitchell,Giannis")
 
     cur.execute(ROSTER_SQL, {"roster": args.roster_id, "league": league})
     roster = cur.fetchall()
     problems = 0
-    for item in args.locks:
+    plan = [(i, day) for i in args.locks]
+    if args.from_sleeper:
+        import json, urllib.request
+        week_n = args.week
+        if week_n is None:
+            cur.execute("SELECT week_number FROM fantasy_weeks WHERE season_id = %s AND %s BETWEEN week_start_date AND week_end_date",
+                        (args.season_id, date.today()))
+            row = cur.fetchone()
+            week_n = row[0] if row else None
+        if week_n is None:
+            raise SystemExit("Could not work out the week; pass --week N.")
+        data = json.load(urllib.request.urlopen(f"https://api.sleeper.app/v1/league/{league}/matchups/{week_n}"))
+        mine = [m for m in data if m.get("roster_id") == args.roster_id]
+        if not mine or not mine[0].get("starters"):
+            raise SystemExit(f"No lineup found for roster {args.roster_id}, week {week_n}.")
+        starters, spts = mine[0]["starters"], mine[0]["starters_points"]
+        if len(starters) != len(SLOT_LABELS):
+            raise SystemExit(f"Expected {len(SLOT_LABELS)} starters, found {len(starters)}.")
+        for frag in [f.strip() for f in args.from_sleeper.split(",") if f.strip()]:
+            hits = [r for r in roster if frag.lower() in (r[2] or "").lower()]
+            if len(hits) != 1:
+                print(f"SKIPPED '{frag}': matched {len(hits)} players on roster {args.roster_id}"); problems += 1; continue
+            sid, nba, name = hits[0]
+            if sid not in starters:
+                print(f"SKIPPED '{frag}': {name} is not in a starting slot in week {week_n}"); problems += 1; continue
+            idx = starters.index(sid)
+            pts = spts[idx]
+            cur.execute("SELECT game_date FROM game_fantasy_scores_weekly_effective WHERE player_id = %s AND season_id = %s "
+                        "AND week_number = %s AND ABS(fantasy_score - %s) <= 0.011 ORDER BY game_date", (nba, args.season_id, week_n, pts))
+            dates = [r[0] for r in cur.fetchall()]
+            if len(dates) != 1:
+                print(f"SKIPPED '{frag}': {name}'s slot shows {pts}, which matches {len(dates)} of his games this week "
+                      f"(use NAME=SLOT --date instead)"); problems += 1; continue
+            plan.append((f"{frag}={SLOT_LABELS[idx]}", dates[0].isoformat()))
+            print(f"  {name}: slot {SLOT_LABELS[idx]}, {pts} -> game {dates[0]}")
+    for item, day in plan:
         if "=" not in item:
             print(f"SKIPPED '{item}': use NAME=SLOT, e.g. Mitchell=PG"); problems += 1; continue
         frag, slot = (x.strip() for x in item.split("=", 1))

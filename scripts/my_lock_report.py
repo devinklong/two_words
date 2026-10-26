@@ -145,12 +145,19 @@ def apply_lock_right(conn, rows):
 
 
 def format_rows(rows):
-    lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock right':>10}  {'Signal':<10} {'Lock into':<10} Note"]
-    lines.append("-" * 108)
+    lines = [f"{'':1} {'Player':<24} {'Score':>6} {'Bar':>6} {'Gap':>6} {'Left':>5} {'Lock right':>10}  {'Signal':<10} {'Roster call':<22} {'Lock into':<10} Note"]
+    lines.append("-" * 134)
     for r in rows:
         bar = f"{r['bar']:.2f}" if r["bar"] is not None else "-"
         gap = f"{r['score'] - r['bar']:+.2f}" if r["bar"] is not None else "-"
         pct = f"{r['lock_pct']*100:.0f}%" if r["lock_pct"] is not None else "-"
+        lens = r.get("lens")
+        if not lens:
+            lens_txt = "-"
+        elif lens["bar"] <= 0:
+            lens_txt = f"{lens['call']} (no alternative) {lens['slot']}"   # nobody else left to fill that slot
+        else:
+            lens_txt = f"{lens['call']} {lens['margin']:+.1f} vs {lens['bar']:.1f} {lens['slot']}"
         note = ""
         if not r["signal"]:
             note = "no baseline yet (rookie / under 20 games)"
@@ -159,7 +166,7 @@ def format_rows(rows):
         if r.get("hist_n"):
             note = (note + "; " if note else "") + f"{r['hist_n']} similar past locks"
         lines.append(f"{'S' if r['starter'] else ' ':1} {r['name']:<24} {r['score']:>6.2f} {bar:>6} {gap:>6} "
-                     f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {r.get('slot') or '':<10} {note}")
+                     f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {lens_txt:<22} {r.get('slot') or '':<10} {note}")
     return lines
 
 
@@ -211,6 +218,7 @@ def recommend_slots(conn, rows, args, day):
     if locked_by_sid:
         notes.append("Already locked: " + ", ".join(f"{nm}={sl}" for nm, sl in locked_by_sid.values()))
 
+    args.lens_state = {"roster": roster, "taxi": taxi, "locked": locked_by_sid}   # reused by apply_roster_lens
     lockers = [r for r in rows if r["signal"] == "LOCK" and r["sid"] not in taxi and r["sid"] not in locked_by_sid]
     if not lockers:
         return True, notes, {}
@@ -248,6 +256,45 @@ def recommend_slots(conn, rows, args, day):
     return True, notes, supply
 
 
+def apply_roster_lens(conn, rows, args, day):
+    """Adds the roster call to each row (see scripts/roster_lens.py): is this score worth locking given what your OTHER unlocked
+    players can still do in the open slots? Returns a note for the report."""
+    from waiver_bid_advisor import fetch_schedule_context, fetch_player_teams, POSITIONS_SQL, VALUES_SQL
+    from lineup_fit import SLOTS
+    from roster_lens import apply_lens, open_slot_list
+    st = getattr(args, "lens_state", None)
+    if not st:
+        return "Roster call skipped: no roster data."
+    today = date.fromisoformat(day)
+    ctx = fetch_schedule_context(conn, args.season_id, today, None)
+    if ctx is None:
+        return "Roster call skipped: that date is not inside a fantasy week."
+    cur = conn.cursor()
+    cur.execute(POSITIONS_SQL)
+    positions = {sid: list(ps) for sid, ps in cur.fetchall()}
+    cur.execute(VALUES_SQL, {"cur": args.season_id, "prev": str(int(args.season_id) - 1)})
+    vals = {pid: (float(a), float(sd) if sd is not None else None) for pid, a, sd, _s in cur.fetchall() if a is not None}
+    cur.close()
+    teams = fetch_player_teams(conn, [nba for _sid, nba, _nm in st["roster"]])
+    alts = []
+    for sid, nba, _nm in st["roster"]:
+        if sid in st["taxi"] or sid in st["locked"] or nba not in vals:
+            continue
+        team_id = teams.get(nba, (None, None))[0]
+        dates = sorted(d for d in ctx["games"].get(team_id, ()) if today < d <= ctx["end"]) if team_id else []
+        alts.append({"positions": positions.get(sid, []), "avg": vals[nba][0], "sd": vals[nba][1], "dates": dates})
+    filled = [x.strip().upper() for x in args.filled.split(",") if x.strip()] if args.filled else []
+    filled += [sl for _nm, sl in st["locked"].values()]
+    open_slots = open_slot_list(SLOTS, filled)
+    for r in rows:
+        r["positions"] = positions.get(r["sid"], [])
+    apply_lens(rows, alts, open_slots, today)
+    for r in rows:
+        if r["sid"] in st["taxi"]:
+            r["lens"] = None
+    return f"Roster call uses {len(open_slots)} open slot(s): {', '.join(open_slots) or 'none'}"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Lock/hold read for your roster's players on a given day.")
     ap.add_argument("--date", help="YYYY-MM-DD (default: yesterday, America/Chicago)")
@@ -264,6 +311,11 @@ def main():
     conn = get_connection()
     cur = conn.cursor()
     params = {"day": day, "season": args.season_id, "roster": args.roster_id}
+    cur.execute("SELECT COUNT(*) FROM game_fantasy_scores_weekly_effective WHERE game_date = %s AND season_id = %s", (day, args.season_id))
+    if cur.fetchone()[0] == 0 and date.fromisoformat(day) < date.today():
+        print(f"\nNo scores are loaded for {day} (or there were no NBA games). Run the daily load first so every game and "
+              f"recorded lock is up to date:\n  python scripts/run_daily.py --date {day}")
+        return
     cur.execute(REPORT_SQL, params)
     rows = [{"name": r[0], "starter": r[1], "sid": r[2], "nba_id": r[3], "game_id": r[4], "score": float(r[5]),
              "left": float(r[6] or 0), "bar": float(r[7]) if r[7] is not None else None, "signal": r[8],
@@ -276,6 +328,11 @@ def main():
     rate_ok = apply_lock_right(conn, rows) if rows else True
     if rows:
         _ok, notes, supply = recommend_slots(conn, rows, args, date.fromisoformat(day))
+        try:
+            notes.append(apply_roster_lens(conn, rows, args, day))
+        except Exception as e:   # the roster call must never break the report
+            conn.rollback()
+            notes.append(f"Roster call skipped ({type(e).__name__}: {e})")
     conn.close()
 
     print(f"\nLock report for roster {args.roster_id}, games on {day} ({len(rows)} played)")
@@ -295,6 +352,8 @@ def main():
     if sat:
         print(f"Did not play ({len(sat)}): {', '.join(sat)}")
     print("LOCK = score at or above his lock bar (LOCKED = already locked into a slot). PASS = below it with no games left. HOLD = below it, games left.")
+    print("Roster call: LOCK/HOLD by comparing the score with what the open slot is worth from your OTHER players' remaining games "
+          "(margin vs that slot's bar). The Signal column is the player-only read; this one is about your roster. See scripts/roster_lens.py.")
     print("Lock into: position slots before G/F before UTIL; among eligible ones, the slot with the fewest games left for the rest of your roster.")
     print("Assumes every slot is open unless you pass --filled; counts every rostered player except taxi (no injury knowledge).")
     print("Lock right: LOCK rows = how often a score this far above the bar was not beaten later that week (history);"
