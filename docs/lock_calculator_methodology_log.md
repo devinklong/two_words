@@ -32,6 +32,11 @@ decision taken. Append new entries at the bottom of each section; do not rewrite
 | 10/26/26 | Finer floor grid (33-37), mult 0.25/0.5/0.75 | At mult 0.5: 1.689 / 1.701 / 1.712 / 1.685 / 1.644; 0.25 within ~0.05; 0.75 worse | 35 kept; peak is flat (33-36 within 0.03) |
 | 10/26/26 | Pool threshold 30 / 35 / 40, floors 30 / 35 / 40 | Floor 35 best in every pool (edges 1.25 / 1.71 / 2.45; pool sizes 659 / 476 / 319) | Floor not an artifact of the pool rule |
 | 10/25/26 | Roster lens self-test and replay of 10/24 | 8 scores for 6 slots: best 6 LOCK, 2 TAKEN | Allocation fix shipped |
+| 10/27/26 | Week 1 matchup totals: Sleeper API vs app (final) | 9 of 10 teams differed; one team's total moved 389.75 -> 395.95 -> 353.7 within a day after the week closed | API matchup points are not a final record; app and `fpts` are |
+| 10/27/26 | Sleeper season total `fpts` vs app, week 1 | 9 of 10 exact to the cent (roster 4: 360.30 vs app 358.30) | `fpts` used as the final week total |
+| 10/27/26 | Frozen-slot rule on rosters 7 and 8 (known app answers) | Without a best-game gate 2 of 4 detections wrong (API lag); with gate + never-swapped-out rule 17 of 18 slots right | Gate and swap rule kept |
+| 10/27/26 | Week-end total check (nine slots must add to `fpts`) on rosters 7, 8 | Unique combination = the app's nine locked games, both teams | Used as the week-end step |
+| 10/28/26 | Technical/flagrant scan: 0 of 43 games this season had been scanned | After scan + stored-score refresh (50 rows lowered): rosters 5-9 each have one exact combination; 2.00 offsets gone | Scan + refresh added to `run_daily.py` |
 
 ## 3. Incidents and what they taught
 
@@ -42,6 +47,12 @@ decision taken. Append new entries at the bottom of each section; do not rewrite
 - **10/24: lock report showed players picked up after the game.** Fixed by excluding players added by a waiver claim placed on or after the game's day
   (waivers process overnight), or a later trade. Tested on made-up cases.
 - **10/25: roster lens called LOCK on every score** when no one had games left. Fixed by assigning scores to open slots.
+- **10/26-28: Sleeper matchup points drift.** After week 1 closed, the matchups endpoint still changed slot values between pulls, and 9 of 10 team totals
+  did not match the app's final scores. Lagging unlocked slots look exactly like locks for 2+ days (George, LeBron). The endpoint has no lock flag, and a lock on
+  the game just played changes nothing in it, so a lock is only visible after the player's next game. Rules now: best game so far, never swapped out of the
+  slot, decided once; week-end check against `fpts`. The 'infer from final API state' rule (`sleeper_final`) was removed.
+- **10/28: technical fouls never scanned for the new season.** `run_daily.py` did not call the scan, and the weekly-effective table never updates stored rows,
+  so 2.00 gaps appeared (Haliburton, Edwards, Jerome). Fixed with a daily scan and a refresh step.
 
 ## 4. Known assumptions and limits
 
@@ -50,3 +61,6 @@ decision taken. Append new entries at the bottom of each section; do not rewrite
 - The lock-bar edge is per player-week against a naive rule and an oracle, with replacement level fixed at 30 (user decision); no confidence intervals yet.
 - Open slots depend on recorded locks; unrecorded locks make the lens wrong.
 - The roster lens has not been backtested.
+- A lock is detectable only after the player's next game (no lock flag in the public matchups endpoint); the app shows padlocks, source unknown.
+- Week-end total check: with 4-5 games per player, several combinations can add up to the same total; rosters 1, 2, 3, 4, 10 in week 1 are undetermined
+  until checked against the app. A 'Double Technical' second player ('Portis Jr.', game 0022600104) could not be resolved by the scan.

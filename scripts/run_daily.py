@@ -99,6 +99,11 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         ("load players (static list)", [PY, "scripts/ingestion/load_players.py"], False),
         ("game logs", [PY, "scripts/ingestion/load_daily_game_logs.py", game_date], True),
         ("backfill missing players", [PY, "scripts/ingestion/backfill_missing_players.py"], True),
+        ("technical/flagrant foul scan", [PY, "scripts/backfill_technical_flagrant_fouls.py", "--season-id", str(season_id)], True),
+        ("apply foul penalties to stored scores", [*psql, "-c",
+            "UPDATE game_fantasy_scores_weekly_effective t SET fantasy_score = f.fantasy_score "
+            "FROM game_fantasy_scores_weekly_full f WHERE t.game_id = f.game_id AND t.player_id = f.player_id "
+            f"AND t.season_id = '{season_id}' AND t.fantasy_score IS DISTINCT FROM f.fantasy_score"], True),
         *([("sleeper crosswalk", [PY, "scripts/sleeper/build_sleeper_player_crosswalk.py"], False)] if run_crosswalk else []),
         ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
         ("table nba_lock_decisions (additive)", [*psql, "-f", "schema/tables/nba_lock_decisions.sql"], False),
