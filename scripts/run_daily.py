@@ -222,9 +222,11 @@ def main():
         for name, cmd, retry in steps:
             print(f"-> {name} ...", flush=True)
             status, secs = run_step(name, cmd, retry, log, heal_players=name.startswith("game logs"))
+            if name == "game logs (today)" and status.startswith("FAIL"):
+                status = "PENDING (retry next run)"   # box score not published yet; the next run and the morning run reload it
             results.append((name, status, secs))
             print(f"   {status} ({secs:.0f}s)")
-            if status != "OK" and not args.keep_going:
+            if not status.startswith(("OK", "PENDING")) and not args.keep_going:
                 print(f"\nStopped at '{name}'. See {log_path}")
                 break
 
@@ -232,7 +234,7 @@ def main():
     for name, status, secs in results:
         print(f"  {status:<14} {name} ({secs:.0f}s)")
     print(f"Full log: {log_path}")
-    sys.exit(0 if all(s == "OK" for _, s, _ in results) and len(results) == len(steps) else 1)
+    sys.exit(0 if all(s.startswith(("OK", "PENDING")) for _, s, _ in results) and len(results) == len(steps) else 1)
 
 
 if __name__ == "__main__":
