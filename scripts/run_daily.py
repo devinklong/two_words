@@ -125,6 +125,8 @@ def build_steps(game_date, season_id, week, run_crosswalk):
 
 FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
 MAX_HEAL_ROUNDS = 5
+LITE_STEPS = {"game logs", "backfill missing players", "technical/flagrant foul scan", "apply foul penalties to stored scores",
+              "sleeper crosswalk", "sleeper sync", "table nba_lock_decisions (additive)", "infer locks from sleeper snapshots"}
 
 
 def run_once(cmd, log):
@@ -178,6 +180,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
     ap.add_argument("--keep-going", action="store_true", help="continue after a failed step")
     ap.add_argument("--backup", action="store_true", help="pg_dump to ~/backups before anything else")
+    ap.add_argument("--lite", action="store_true", help="game-night run: game logs (yesterday + today), fouls, sleeper sync, lock inference only")
     args = ap.parse_args()
 
     now = datetime.now(TZ)
@@ -191,7 +194,11 @@ def main():
         run_xw = unmatched_rostered_count() > 0
         steps = build_steps(game_date, season_id, week, run_xw)
 
-    print(f"Daily run: game date {game_date}, fantasy week {week}, crosswalk: {run_xw}")
+    if args.lite:
+        steps = [x for x in steps if x[0] in LITE_STEPS]
+        at = next((k for k, x in enumerate(steps) if x[0] == "game logs"), 0) + 1
+        steps.insert(at, ("game logs (today)", [PY, "scripts/ingestion/load_daily_game_logs.py", now.date().isoformat()], True))
+    print(f"Daily run: game date {game_date}, fantasy week {week}, crosswalk: {run_xw}{', lite' if args.lite else ''}")
     if args.backup:
         steps.insert(0, ("backup", ["bash", "-c", f"mkdir -p ~/backups && pg_dump postgres > ~/backups/postgres_{now.date()}.sql"], False))
 
@@ -201,13 +208,20 @@ def main():
         return
 
     LOG_DIR.mkdir(exist_ok=True)
+    import fcntl
+    lock = open(LOG_DIR / ".run_daily.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Another run_daily is already running; skipping this one.")
+        return
     log_path = LOG_DIR / f"daily_{now.date()}.log"
     results = []
     with open(log_path, "a") as log:
         log.write(f"\n######## run started {now.isoformat()} (game date {game_date}) ########\n")
         for name, cmd, retry in steps:
             print(f"-> {name} ...", flush=True)
-            status, secs = run_step(name, cmd, retry, log, heal_players=(name == "game logs"))
+            status, secs = run_step(name, cmd, retry, log, heal_players=name.startswith("game logs"))
             results.append((name, status, secs))
             print(f"   {status} ({secs:.0f}s)")
             if status != "OK" and not args.keep_going:

@@ -46,7 +46,7 @@ def infer_slot(states, games_by_player, checked_through):
         if not r["pid"] or r["nba"] is None or not r["pts"]:
             continue
         if any(x["pid"] != r["pid"] for x in runs[i + 1:]):
-            continue
+            continue   # a locked player stays in his slot, so someone later swapped out of it was never locked (Queen)
         games = games_by_player.get(r["nba"], [])
         g = match_game(r["pts"], [x for x in games if x["date"] <= r["ts"].astimezone().date()])
         if g is None:
@@ -54,6 +54,8 @@ def infer_slot(states, games_by_player, checked_through):
         cutoff = r["until"].astimezone().date() - timedelta(days=BUFFER_DAYS)
         played = [x for x in games if x["date"] <= cutoff]
         later = [x for x in played if x["date"] > g["date"]]
+        # lock = held past a later game AND it is his best game so far; a lower early score that "holds" is API lag
+        # (George 31.10 / LeBron 40.15 in week 1), not a lock -- a manager keeps the better score
         if later and float(g["score"]) >= max(float(x["score"]) for x in played):
             return r, g
     return None
@@ -63,7 +65,7 @@ TOTALS_DDL = """CREATE TABLE IF NOT EXISTS sleeper_roster_week_totals (
     league_id text NOT NULL, season_id text NOT NULL, week_number integer NOT NULL, roster_id integer NOT NULL,
     final_points numeric NOT NULL, status text, note text, recorded_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (league_id, season_id, week_number, roster_id))"""
-OFFSETS = (0, 200, 400, 600)
+OFFSETS = (0, 200, 400, 600)   # our box scores may miss a technical foul (-2.00 each); tried only after an exact match fails
 
 
 def solve_week(cands, target):
@@ -86,7 +88,7 @@ def solve_week(cands, target):
 
 def choose_solution(cands, target, priors):
     """-> (choice tuple or None, status, offset_cents). Exact total first; then the technical-foul offsets, each only
-    accepted when it gives ONE answer. Among several exact answers, the one closest to the priors wins."""
+    accepted when it gives ONE closest-to-priors answer. Among several exact answers, the one closest to the priors wins."""
     for off in OFFSETS:
         sols = solve_week(cands, target + off)
         if not sols:
@@ -155,7 +157,7 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry):
 
 
 def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source, overwrite=False):
-    """Insert one lock row with the model's view of that game; never overwrites a hand-entered row."""
+    """Insert one lock row with the model's view of that game; never overwrites an existing slot."""
     cur.execute("""SELECT g.fantasy_score, s.lock_bar, s.lock_signal, s.percentage_to_lock, s.tier, s.player_stats_source,
                           e.effective_games_remaining_in_week
                    FROM game_fantasy_scores_weekly_effective g
@@ -197,7 +199,7 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             continue
         target_pts, status = totals[roster]
         if status and not args.recheck:
-            continue
+            continue   # already settled in an earlier run
         starters = last_starters[roster]
         cands, picks, priors, names = [], [], [], []
         for i, slot in enumerate(SLOT_ORDER):
@@ -206,7 +208,7 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             wk = sorted(games.get(nba) or [], key=lambda x: x["date"])
             have = {} if args.recheck else rows[roster]
             if have.get(slot, (None, None))[1] == "manual":
-                wk = [x for x in wk if x["id"] == have[slot][0]] or wk
+                wk = [x for x in wk if x["id"] == have[slot][0]] or wk   # your own entry is fixed
             prior = len(wk) - 1
             if slot in have and have[slot][1] != "auto_final":
                 prior = next((k for k, x in enumerate(wk) if x["id"] == have[slot][0]), prior)
@@ -223,7 +225,7 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
         if sol is None:
             sol, source = priors, "unverified"
         else:
-            source = "checksum"
+            source = "checksum" if st in ("unique", "offset") else "checksum_" + st
         for i, slot in enumerate(SLOT_ORDER):
             wk = picks[i]
             if not wk:
@@ -266,7 +268,7 @@ def main():
     cur.execute("SELECT DISTINCT sleeper_player_id, nba_player_id, player_name FROM roster_ownership WHERE league_id = %s", (league,))
     xw = {s: (n, nm) for s, n, nm in cur.fetchall()}
     if args.recheck and not args.dry_run:
-        raise SystemExit("--recheck only works with --dry-run")
+        raise SystemExit("--recheck only works with --dry-run (it would overwrite nothing, but it would print locks already recorded)")
     now = datetime.now(timezone.utc)
     total = 0
     for week, week_end in weeks.items():
