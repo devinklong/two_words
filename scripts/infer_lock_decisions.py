@@ -188,6 +188,43 @@ def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source
          m[4], m[5], m[6], source))
 
 
+OBS_TOL = 0.011
+
+
+def observed_options(states, final_sid, week_end, wk, original, nba):
+    """The values Sleeper ITSELF reported for this slot after the week ended, each tied to one of the player's games.
+    -> [(cents, game, shift_cents, times_seen)]; shift is (pre-correction minus current) when the value is the score the
+    game had before a later NBA correction. A value that matches no game exactly once is dropped."""
+    seen = defaultdict(int)
+    for ts, sid, _nba, pts in states:
+        if sid == final_sid and pts and ts.astimezone().date() > week_end:
+            seen[round(float(pts), 2)] += 1
+    out = []
+    for v, n in seen.items():
+        hit = [g for g in wk if abs(float(g["score"]) - v) <= OBS_TOL]
+        if len(hit) == 1:
+            out.append((int(round(v * 100)), hit[0], 0, n))
+            continue
+        hit = [g for g in wk if (g["id"], nba) in original and abs(original[(g["id"], nba)] / 100 - v) <= OBS_TOL]
+        if len(hit) == 1:
+            g = hit[0]
+            out.append((int(round(v * 100)), g, original[(g["id"], nba)] - int(round(float(g["score"]) * 100)), n))
+    return out
+
+
+def solve_from_observed(obs, target):
+    """obs: per slot, the options from observed_options (a slot with no games gets [(0, None, 0, 1)]).
+    -> (choice, status, explained_cents) for the combination of REPORTED values that adds up to the final, else None."""
+    sols = solve_week([[o[0] for o in slot] for slot in obs], target)
+    if not sols:
+        return None
+    weight = lambda sol: sum(obs[i][j][3] for i, j in enumerate(sol))   # how often Sleeper showed each value
+    best = max(weight(x) for x in sols)
+    top = [x for x in sols if weight(x) == best]
+    st = "unique" if len(sols) == 1 else ("multi" if len(top) == 1 else "ambiguous")
+    return top[0], st, sum(obs[i][j][2] for i, j in enumerate(top[0]))
+
+
 def with_pre_correction_scores(cands, picks, priors, nba_ids, original):
     """Per slot, add a second candidate for every game the NBA corrected later: the score it had before the correction.
     -> (cands, picks, priors, shifts); shifts[i][k] is (pre-correction minus current) in cents, or None for a current score."""
@@ -205,7 +242,7 @@ def with_pre_correction_scores(cands, picks, priors, nba_ids, original):
     return out_c, out_p, out_pri, out_shift
 
 
-def finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found):
+def finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found, per_slot, week_end):
     """After the week is over: pick, per team, the combination of locked games that adds up to Sleeper's final total."""
     totals = week_totals(cur, league, args.season_id, week, closed_weeks, args.dry_run, refresh=args.refresh_totals)
     if not totals:
@@ -246,23 +283,40 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             priors.append(max(prior, 0))
             names.append((pid, nba, (xw.get(pid) or (None, pid))[1]))
         target = int(round(target_pts * 100))
-        sol, st, off = choose_solution(cands, target, priors)
         explained = 0
         note_extra = ""
-        if st in ("offset", "no_match") and original:
-            # Sleeper freezes the week's total, so it may hold the score from BEFORE a later NBA correction. Offer both
-            # versions of each corrected game and accept only an exact match.
-            ext_c, ext_p, ext_pri, ext_orig = with_pre_correction_scores(cands, picks, priors, [n[1] for n in names], original)
-            sol2, st2, _ = choose_solution(ext_c, target, ext_pri, offsets=(0,))
-            if sol2 is not None:
-                cands, picks, sol, st, off = ext_c, ext_p, sol2, st2, 0
-                explained = sum(ext_orig[i][j] or 0 for i, j in enumerate(sol2))
-                changed = [names[i][2] for i, j in enumerate(sol2) if ext_orig[i][j]]
-                note_extra = f"; Sleeper credited the pre-correction score for {', '.join(changed)} ({explained / 100:+.2f})"
+        method = "totals"
+        obs = [observed_options(per_slot.get((roster, slot), []), starters[i], week_end, picks[i], original, names[i][1]) or None
+               for i, slot in enumerate(SLOT_ORDER)]
+        obs = [o if o else ([(0, None, 0, 1)] if not picks[i] else None) for i, o in enumerate(obs)]
+        if all(o is not None for o in obs):
+            found_obs = solve_from_observed(obs, target)
+            if found_obs:
+                sol, st, explained = found_obs
+                cands, picks, off, method = [[o[0] for o in slot] for slot in obs], [[o[1] for o in slot if o[1] is not None] for slot in obs], 0, "reported"
+                changed = [names[i][2] for i, j in enumerate(sol) if obs[i][j][2]]
+                if changed:
+                    note_extra = f"; Sleeper credited the pre-correction score for {', '.join(changed)} ({explained / 100:+.2f})"
+        if method == "totals":
+            sol, st, off = choose_solution(cands, target, priors)
+            if st in ("offset", "no_match") and original:
+                # Sleeper freezes the week's total, so it may hold the score from BEFORE a later NBA correction. Offer both
+                # versions of each corrected game and accept only an exact match.
+                ext_c, ext_p, ext_pri, ext_orig = with_pre_correction_scores(cands, picks, priors, [n[1] for n in names], original)
+                sol2, st2, _ = choose_solution(ext_c, target, ext_pri, offsets=(0,))
+                if sol2 is not None:
+                    cands, picks, sol, st, off = ext_c, ext_p, sol2, st2, 0
+                    explained = sum(ext_orig[i][j] or 0 for i, j in enumerate(sol2))
+                    changed = [names[i][2] for i, j in enumerate(sol2) if ext_orig[i][j]]
+                    note_extra = f"; Sleeper credited the pre-correction score for {', '.join(changed)} ({explained / 100:+.2f})"
+
         label = {"unique": "unique match", "multi": "several exact matches, closest to evidence chosen",
                  "ambiguous": "AMBIGUOUS: several equal matches", "offset": f"matched after a {off/100:.2f} scoring offset",
                  "no_match": "NO combination adds up"}[st]
         label += note_extra
+        if method == "reported":
+            label = {"unique": "unique match on the values Sleeper itself reported", "multi": "several matches on Sleeper's reported values, most often shown chosen",
+                     "ambiguous": "AMBIGUOUS: several equal matches on Sleeper's reported values"}[st] + note_extra
         print(f"  week {week} roster {roster:>2}: final {target_pts:.2f} -> {label}")
         if sol is None:
             sol, source = priors, "unverified"
@@ -356,7 +410,7 @@ def main():
             days_over = (now.date() - week_end).days
             args.refinalize = force_refinalize or days_over <= REFINALIZE_DAYS
             args.refresh_totals = force_refinalize or days_over <= REFRESH_TOTALS_DAYS
-            total += finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found)
+            total += finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found, per_slot, week_end)
     if not args.dry_run:
         conn.commit()
     print(f"{total} lock(s) recorded" + (" (dry run, nothing written)" if args.dry_run else ""))
