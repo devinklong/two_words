@@ -3,6 +3,8 @@
   game logs   the last audit_game_logs.py run (nba_game_log_audit): any check with issues is RED
   foul scan   played games not yet scanned for technical/flagrant fouls: RED if any (excluding today's)
   sleeper     age of the newest matchup snapshot: YELLOW over 6 hours, RED over 24
+  lock flags  Sleeper's own lock flags for the current week: YELLOW if not refreshed for 6 hours (RED 24), or if a flagged game
+              cannot be matched to an NBA game (RED)
   players     rostered players without an NBA id: RED if any
   weeks       closed weeks (nba_week_reconciliation): RED if a team's locked games do not add up to Sleeper's final score;
               YELLOW if scores add up but the lock choice is not proven (several combinations fit)
@@ -51,6 +53,21 @@ def gather(cur, season_id, today, now):
     else:
         hours = (now - last).total_seconds() / 3600
         out.append(("sleeper", "GREEN" if hours <= 6 else "YELLOW" if hours <= 24 else "RED", f"newest snapshot {hours:.1f} h old"))
+    cur.execute("SELECT to_regclass('sleeper_lock_flags'), to_regclass('sleeper_game_map')")
+    if all(cur.fetchone()):
+        cur.execute("""SELECT w.week_number, COUNT(f.*), MAX(f.last_seen_at), COUNT(*) FILTER (WHERE m.nba_game_id IS NULL AND f.slot IS NOT NULL)
+                       FROM fantasy_weeks w
+                       LEFT JOIN sleeper_lock_flags f ON f.week_number = w.week_number AND f.season_id = w.season_id
+                       LEFT JOIN sleeper_game_map m ON m.sleeper_game_id = f.sleeper_game_id
+                       WHERE w.season_id = %s AND %s BETWEEN w.week_start_date AND w.week_end_date GROUP BY w.week_number""", (season_id, today))
+        row = cur.fetchone()
+        if row:
+            wk, n, seen, unmatched = row
+            hours = (now - seen).total_seconds() / 3600 if seen else None
+            level = "RED" if unmatched or (hours is not None and hours > 24) else "YELLOW" if hours is not None and hours > 6 else "GREEN"
+            msg = f"week {wk}: {n} locked starter(s) read from Sleeper" + (f", newest {hours:.1f} h old" if hours is not None else "")
+            msg += f", {unmatched} on a game not matched to an NBA game" if unmatched else ""
+            out.append(("lock flags", level, msg))
     cur.execute("SELECT COUNT(*) FROM roster_ownership WHERE nba_player_id IS NULL")
     n = cur.fetchone()[0]
     out.append(("players", "GREEN" if n == 0 else "RED", f"{n} rostered player(s) without an NBA id"))
