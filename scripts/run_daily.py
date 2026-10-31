@@ -131,7 +131,7 @@ def build_steps(game_date, season_id, week, run_crosswalk, lookback=2):
         ("my lock report smoke (in log)", [PY, "scripts/my_lock_report.py", "--roster-id", str(MY_ROSTER_ID), "--season-id", str(season_id)], False),
         ("opponent scout smoke (in log)", [PY, "scripts/opponent_scout.py", str(MY_ROSTER_ID), *wk, "--season-id", str(season_id)], False),
         ("preflight", [PY, "scripts/season_opener_preflight.py", *wk], False),
-        ("health summary", [PY, "scripts/health_summary.py", "--season-id", str(season_id)], False),
+        ("health summary", [PY, "scripts/health_summary.py", "--season-id", str(season_id), "--notify"], False),
     ]
 
 
@@ -192,6 +192,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
     ap.add_argument("--keep-going", action="store_true", help="continue after a failed step")
     ap.add_argument("--backup", action="store_true", help="pg_dump to ~/backups before anything else")
+    ap.add_argument("--lookback", type=int, help="days before the game date that game logs and team results are re-pulled (default 2; 10 on Monday "
+                                                 "mornings, which re-checks the whole week that just closed; 0 for --lite)")
     ap.add_argument("--lite", action="store_true", help="game-night run: game logs (yesterday + today), fouls, sleeper sync, lock inference only")
     args = ap.parse_args()
 
@@ -204,7 +206,8 @@ def main():
     else:
         season_id, week = current_week(now.date())
         run_xw = unmatched_rostered_count() > 0
-        steps = build_steps(game_date, season_id, week, run_xw, 0 if args.lite else 2)
+        lookback = args.lookback if args.lookback is not None else (0 if args.lite else 10 if now.weekday() == 0 else 2)
+        steps = build_steps(game_date, season_id, week, run_xw, lookback)
 
     if args.lite:
         steps = [x for x in steps if x[0] in LITE_STEPS]
@@ -240,6 +243,7 @@ def main():
             print(f"   {status} ({secs:.0f}s)")
             if not status.startswith(("OK", "PENDING")) and not args.keep_going:
                 print(f"\nStopped at '{name}'. See {log_path}")
+                subprocess.run([PY, "scripts/health_summary.py", "--alert", f"daily run stopped at '{name}'"], cwd=ROOT, check=False)
                 break
 
     print("\n--- Summary ---")

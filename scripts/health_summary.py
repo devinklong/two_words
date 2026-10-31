@@ -9,10 +9,16 @@
   weeks       closed weeks (nba_week_reconciliation): RED if a team's locked games do not add up to Sleeper's final score;
               YELLOW if scores add up but the lock choice is not proven (several combinations fit)
 
-Usage (from ~/projects/two_words):  python scripts/health_summary.py [--season-id 22026]
+--notify  also shows a Mac notification when something needs you: any RED, or YELLOW on sleeper / lock flags. It speaks only when
+          that set CHANGES (and once when it clears), so an hourly run never repeats itself.
+--alert TEXT  shows a notification with that text right away (run_daily uses it when a step fails) and exits.
+
+Usage (from ~/projects/two_words):  python scripts/health_summary.py [--season-id 22026] [--notify]
 """
 import argparse
+import subprocess
 import sys
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -82,10 +88,45 @@ def gather(cur, season_id, today, now):
     return out
 
 
+ALERT_YELLOW = ("sleeper", "lock flags")   # yellow in these areas needs you; the minutes note and the like do not
+STATE = Path(__file__).resolve().parent / "logs" / ".health_notified"
+
+
+def push(title, text):
+    """Mac notification; silently does nothing off a Mac or outside a login session."""
+    try:
+        subprocess.run(["osascript", "-e", "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run",
+                        title, text], timeout=20, check=False)
+    except Exception:
+        pass
+
+
+def notify(rows):
+    alerts = [(a, lvl, m) for a, lvl, m in rows if lvl == "RED" or (lvl == "YELLOW" and a in ALERT_YELLOW)]
+    key = "|".join(f"{a}:{lvl}" for a, lvl, _ in alerts)
+    try:
+        last = STATE.read_text() if STATE.exists() else ""
+        if key == last:
+            return
+        STATE.parent.mkdir(exist_ok=True)
+        STATE.write_text(key)
+    except OSError:
+        last = ""
+    if alerts:
+        push("two_words needs attention", "; ".join(f"{a}: {m}" for a, _, m in alerts)[:240])
+    elif last:
+        push("two_words is back to normal", "Nothing needs attention.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--season-id", default="22026")
+    ap.add_argument("--notify", action="store_true")
+    ap.add_argument("--alert")
     args = ap.parse_args()
+    if args.alert:
+        push("two_words needs attention", args.alert)
+        return
     from db_connection import get_connection
     conn = get_connection()
     cur = conn.cursor()
@@ -96,6 +137,8 @@ def main():
     for area, level, msg in rows:
         print(f"  {level:<6} {area:<10} {msg}")
     cur.close(); conn.close()
+    if args.notify:
+        notify(rows)
     sys.exit(1 if overall == "RED" else 0)
 
 
