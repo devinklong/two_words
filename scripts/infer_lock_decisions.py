@@ -163,7 +163,7 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
     return {r: (v, None) for r, v in derived.items()}
 
 
-def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source, overwrite=False):
+def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source, overwrite=False, keep=("manual",)):
     """Insert one lock row with the model's view of that game; never overwrites an existing slot."""
     cur.execute("""SELECT g.fantasy_score, s.lock_bar, s.lock_signal, s.percentage_to_lock, s.tier, s.player_stats_source,
                           e.effective_games_remaining_in_week
@@ -183,9 +183,33 @@ def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source
             fantasy_score = EXCLUDED.fantasy_score, lock_bar = EXCLUDED.lock_bar, model_signal = EXCLUDED.model_signal,
             model_percentage_to_lock = EXCLUDED.model_percentage_to_lock, tier = EXCLUDED.tier,
             stats_source = EXCLUDED.stats_source, games_left_effective = EXCLUDED.games_left_effective,
-            source = EXCLUDED.source WHERE nba_lock_decisions.source <> 'manual'""" if overwrite else "DO NOTHING"),
+            source = EXCLUDED.source WHERE nba_lock_decisions.source <> ALL(%s)""" if overwrite else "DO NOTHING"),
         (league, roster, season_id, week, slot, pid, nba, name, g["id"], g["date"], m[0], m[1], m[2], m[3],
-         m[4], m[5], m[6], source))
+         m[4], m[5], m[6], source) + ((list(keep),) if overwrite else ()))
+
+
+FIXED_SOURCES = ("manual", "sleeper_flag")   # rows no inference may change
+
+
+def flag_locks(cur, args, league, week, games, xw):
+    """Locks Sleeper itself reports (sleeper_lock_flags, read by sleeper/ingest_lock_flags.py) -> nba_lock_decisions, source
+    sleeper_flag. Returns the (roster, slot) pairs covered. A flag whose game has no score row yet waits for the next run."""
+    cur.execute("SELECT to_regclass('sleeper_lock_flags'), to_regclass('sleeper_game_map')")
+    if not all(cur.fetchone()):
+        return set()
+    cur.execute("""SELECT f.roster_id, f.slot, f.sleeper_player_id, m.nba_game_id FROM sleeper_lock_flags f
+                   JOIN sleeper_game_map m ON m.sleeper_game_id = f.sleeper_game_id
+                   WHERE f.league_id = %s AND f.week_number = %s AND m.nba_game_id IS NOT NULL""", (league, week))
+    covered = set()
+    for roster, slot, sid, gid in cur.fetchall():
+        nba, name = xw.get(sid) or (None, sid)
+        g = next((x for x in games.get(nba) or [] if x["id"] == gid), None)
+        if g is None:
+            continue
+        covered.add((roster, slot))
+        if not args.dry_run:
+            record(cur, league, roster, args.season_id, week, slot, sid, nba, name, g, "sleeper_flag", overwrite=True)
+    return covered
 
 
 OBS_TOL = 0.011
@@ -273,8 +297,8 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             nba = (xw.get(pid) or (None, None))[0]
             wk = sorted(games.get(nba) or [], key=lambda x: x["date"])
             have = {} if args.recheck else rows[roster]
-            if have.get(slot, (None, None))[1] == "manual":
-                wk = [x for x in wk if x["id"] == have[slot][0]] or wk   # your own entry is fixed
+            if have.get(slot, (None, None))[1] in FIXED_SOURCES:
+                wk = [x for x in wk if x["id"] == have[slot][0]] or wk   # your own entry, or a lock Sleeper itself reports, is fixed
             prior = len(wk) - 1
             if slot in have and have[slot][1] != "auto_final":
                 prior = next((k for k, x in enumerate(wk) if x["id"] == have[slot][0]), prior)
@@ -331,7 +355,7 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             print(f"      {slot:<5} {name}  {float(g['score']):.2f} on {g['date']}  [{source}]")
             written += 1
             if not args.dry_run:
-                record(cur, league, roster, args.season_id, week, slot, pid, nba, name, g, source, overwrite=True)
+                record(cur, league, roster, args.season_id, week, slot, pid, nba, name, g, source, overwrite=True, keep=FIXED_SOURCES)
         if not args.dry_run:
             cur.execute("""UPDATE sleeper_roster_week_totals SET status = %s, note = %s, explained_diff = %s
                            WHERE league_id = %s AND season_id = %s AND week_number = %s AND roster_id = %s""",
@@ -370,13 +394,17 @@ def main():
     now = datetime.now(timezone.utc)
     total = 0
     for week, week_end in weeks.items():
-        cur.execute("""SELECT roster_id, slot FROM nba_lock_decisions WHERE league_id = %s AND week_number = %s""", (league, week))
-        done = {(r, sl) for r, sl in cur.fetchall()}
         cur.execute("""SELECT player_id, game_id, game_date, fantasy_score FROM game_fantasy_scores_weekly_effective
                        WHERE season_id = %s AND week_number = %s""", (args.season_id, week))
         games = defaultdict(list)
         for pid, gid, gd, sc in cur.fetchall():
             games[pid].append({"id": gid, "date": gd, "score": sc})
+        flagged = flag_locks(cur, args, league, week, games, xw)
+        if flagged:
+            print(f"  week {week}: {len(flagged)} lock(s) read straight from Sleeper's lock flags")
+            total += len(flagged)
+        cur.execute("""SELECT roster_id, slot FROM nba_lock_decisions WHERE league_id = %s AND week_number = %s""", (league, week))
+        done = {(r, sl) for r, sl in cur.fetchall()} | flagged
         cur.execute("""SELECT roster_id, synced_at, starters, starters_points FROM sleeper_matchup_points_snapshots
                        WHERE league_id = %s AND week = %s AND starters IS NOT NULL ORDER BY roster_id, synced_at""", (league, week))
         per_slot = defaultdict(list)
