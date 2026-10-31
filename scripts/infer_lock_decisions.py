@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 SLOT_ORDER = ["PG", "SG", "G", "SF", "PF", "F", "C", "UTIL1", "UTIL2"]
 TOL = 0.01
 BUFFER_DAYS = 2
+REFRESH_TOTALS_DAYS = 1   # Sleeper's final total is re-read only until the day after the week ends, then kept as recorded
 REFINALIZE_DAYS = 7   # a closed week is re-derived for this many days: the NBA corrects box scores and Sleeper's totals move
 
 
@@ -64,7 +65,8 @@ def infer_slot(states, games_by_player, checked_through):
 
 TOTALS_DDL = """CREATE TABLE IF NOT EXISTS sleeper_roster_week_totals (
     league_id text NOT NULL, season_id text NOT NULL, week_number integer NOT NULL, roster_id integer NOT NULL,
-    final_points numeric NOT NULL, status text, note text, recorded_at timestamptz NOT NULL DEFAULT now(),
+    final_points numeric NOT NULL, status text, note text, explained_diff numeric NOT NULL DEFAULT 0,
+    recorded_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (league_id, season_id, week_number, roster_id))"""
 OFFSETS = (0, 200, 400, 600)   # our box scores may miss a technical foul (-2.00 each); tried only after an exact match fails
 
@@ -87,10 +89,10 @@ def solve_week(cands, target):
     return out
 
 
-def choose_solution(cands, target, priors):
+def choose_solution(cands, target, priors, offsets=OFFSETS):
     """-> (choice tuple or None, status, offset_cents). Exact total first; then the technical-foul offsets, each only
     accepted when it gives ONE closest-to-priors answer. Among several exact answers, the one closest to the priors wins."""
-    for off in OFFSETS:
+    for off in offsets:
         sols = solve_week(cands, target + off)
         if not sols:
             continue
@@ -124,6 +126,8 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
     if not have and not dry:
         cur.execute(TOTALS_DDL)
         have = True
+    if have and not dry:
+        cur.execute("ALTER TABLE sleeper_roster_week_totals ADD COLUMN IF NOT EXISTS explained_diff numeric NOT NULL DEFAULT 0")
     stored = {}
     prior = defaultdict(float)
     prior_weeks = set()
@@ -184,9 +188,26 @@ def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source
          m[4], m[5], m[6], source))
 
 
+def with_pre_correction_scores(cands, picks, priors, nba_ids, original):
+    """Per slot, add a second candidate for every game the NBA corrected later: the score it had before the correction.
+    -> (cands, picks, priors, shifts); shifts[i][k] is (pre-correction minus current) in cents, or None for a current score."""
+    out_c, out_p, out_pri, out_shift = [], [], [], []
+    for i in range(len(cands)):
+        c_i, p_i, s_i, pri_i = [], [], [], priors[i]
+        for k, g in enumerate(picks[i]):
+            if k == priors[i]:
+                pri_i = len(c_i)
+            c_i.append(cands[i][k]); p_i.append(g); s_i.append(None)
+            old = original.get((g["id"], nba_ids[i]))
+            if old is not None and old != cands[i][k]:
+                c_i.append(old); p_i.append(g); s_i.append(old - cands[i][k])
+        out_c.append(c_i or cands[i]); out_p.append(p_i); out_shift.append(s_i); out_pri.append(pri_i)
+    return out_c, out_p, out_pri, out_shift
+
+
 def finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found):
     """After the week is over: pick, per team, the combination of locked games that adds up to Sleeper's final total."""
-    totals = week_totals(cur, league, args.season_id, week, closed_weeks, args.dry_run, refresh=args.refinalize)
+    totals = week_totals(cur, league, args.season_id, week, closed_weeks, args.dry_run, refresh=args.refresh_totals)
     if not totals:
         return 0
     cur.execute("""SELECT roster_id, slot, game_id, source FROM nba_lock_decisions
@@ -194,6 +215,11 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
     rows = defaultdict(dict)
     for roster, slot, gid, src in cur.fetchall():
         rows[roster][slot] = (gid, src)
+    original = {}   # (game_id, nba_player_id) -> the score before the NBA's later correction, in cents
+    cur.execute("SELECT to_regclass('game_score_corrections')")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT game_id, player_id, original_score FROM game_score_corrections")
+        original = {(g, int(p)): int(round(float(s) * 100)) for g, p, s in cur.fetchall()}
     for (roster, slot), gid in found.items():
         rows[roster].setdefault(slot, (gid, "sleeper_frozen"))
     written = 0
@@ -221,9 +247,22 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             names.append((pid, nba, (xw.get(pid) or (None, pid))[1]))
         target = int(round(target_pts * 100))
         sol, st, off = choose_solution(cands, target, priors)
+        explained = 0
+        note_extra = ""
+        if st in ("offset", "no_match") and original:
+            # Sleeper freezes the week's total, so it may hold the score from BEFORE a later NBA correction. Offer both
+            # versions of each corrected game and accept only an exact match.
+            ext_c, ext_p, ext_pri, ext_orig = with_pre_correction_scores(cands, picks, priors, [n[1] for n in names], original)
+            sol2, st2, _ = choose_solution(ext_c, target, ext_pri, offsets=(0,))
+            if sol2 is not None:
+                cands, picks, sol, st, off = ext_c, ext_p, sol2, st2, 0
+                explained = sum(ext_orig[i][j] or 0 for i, j in enumerate(sol2))
+                changed = [names[i][2] for i, j in enumerate(sol2) if ext_orig[i][j]]
+                note_extra = f"; Sleeper credited the pre-correction score for {', '.join(changed)} ({explained / 100:+.2f})"
         label = {"unique": "unique match", "multi": "several exact matches, closest to evidence chosen",
                  "ambiguous": "AMBIGUOUS: several equal matches", "offset": f"matched after a {off/100:.2f} scoring offset",
                  "no_match": "NO combination adds up"}[st]
+        label += note_extra
         print(f"  week {week} roster {roster:>2}: final {target_pts:.2f} -> {label}")
         if sol is None:
             sol, source = priors, "unverified"
@@ -240,9 +279,9 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             if not args.dry_run:
                 record(cur, league, roster, args.season_id, week, slot, pid, nba, name, g, source, overwrite=True)
         if not args.dry_run:
-            cur.execute("""UPDATE sleeper_roster_week_totals SET status = %s, note = %s
+            cur.execute("""UPDATE sleeper_roster_week_totals SET status = %s, note = %s, explained_diff = %s
                            WHERE league_id = %s AND season_id = %s AND week_number = %s AND roster_id = %s""",
-                        (st, label, league, args.season_id, week, roster))
+                        (st, label, explained / 100, league, args.season_id, week, roster))
     return written
 
 
@@ -314,7 +353,9 @@ def main():
             if not args.dry_run:
                 record(cur, league, roster, args.season_id, week, slot, r["pid"], r["nba"], name, g, "sleeper_frozen")
         if week_over:
-            args.refinalize = force_refinalize or (now.date() - week_end).days <= REFINALIZE_DAYS
+            days_over = (now.date() - week_end).days
+            args.refinalize = force_refinalize or days_over <= REFINALIZE_DAYS
+            args.refresh_totals = force_refinalize or days_over <= REFRESH_TOTALS_DAYS
             total += finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found)
     if not args.dry_run:
         conn.commit()

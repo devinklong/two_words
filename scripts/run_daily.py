@@ -108,6 +108,7 @@ def build_steps(game_date, season_id, week, run_crosswalk, lookback=2):
             "UPDATE game_fantasy_scores_weekly_effective t SET fantasy_score = f.fantasy_score "
             "FROM game_fantasy_scores_weekly_full f WHERE t.game_id = f.game_id AND t.player_id = f.player_id "
             f"AND t.season_id = '{season_id}' AND t.fantasy_score IS DISTINCT FROM f.fantasy_score"], True),
+        ("log score corrections", [PY, "scripts/log_score_corrections.py"], False),
         ("audit game logs", [PY, "scripts/audit_game_logs.py", "--season-id", str(season_id)], False),
         *([("sleeper crosswalk", [PY, "scripts/sleeper/build_sleeper_player_crosswalk.py"], False)] if run_crosswalk else []),
         ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
@@ -136,7 +137,7 @@ def build_steps(game_date, season_id, week, run_crosswalk, lookback=2):
 FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
 MAX_HEAL_ROUNDS = 5
 LITE_STEPS = {"game logs", "audit game logs", "view nba_week_reconciliation (additive)", "health summary", "backfill missing players", "technical/flagrant foul scan", "apply foul penalties to stored scores",
-              "sleeper crosswalk", "sleeper sync", "table nba_lock_decisions (additive)", "refresh scores saved in nba_lock_decisions", "infer locks from sleeper snapshots"}
+              "log score corrections", "sleeper crosswalk", "sleeper sync", "table nba_lock_decisions (additive)", "refresh scores saved in nba_lock_decisions", "infer locks from sleeper snapshots"}
 
 
 def run_once(cmd, log):
