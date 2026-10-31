@@ -49,6 +49,14 @@ imports were failing with ModuleNotFoundError before the path fix ever
 ran. Moved to the top, right after importing sys/Path, before any local
 import.
 
+CHANGED 10/31/26: re-running a date now CORRECTS rows the NBA has since
+changed (see load_game_logs.py); run_daily.py re-pulls the last 3 days each
+morning for that reason. Counts below are rows new or corrected.
+
+RETRIES (10/31/26): every NBA API call is retried up to 3 more times with a
+growing pause, box scores use a 60 s timeout, and a day that still fails no
+longer ends the whole date range (exit code 1 at the end, so run_daily retries).
+
 Run:
     python scripts/load_daily_game_logs.py                        (yesterday only, unchanged default)
     python scripts/load_daily_game_logs.py YYYY-MM-DD              (single day, unchanged)
@@ -56,6 +64,7 @@ Run:
 """
 
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -68,6 +77,24 @@ from build_gap_reasons import build_gap_reasons
 from sync_game_fantasy_scores_weekly_effective import sync_game_fantasy_scores_weekly_effective
 from load_game_logs import load_game_logs, GAME_LOGS_COLUMNS
 from db_connection import get_connection
+
+
+API_TRIES = 4            # stats.nba.com times out at random; one slow call must not lose a game or a day
+API_TIMEOUT = 60         # seconds per call (nba_api default is 30)
+SLEEP_BETWEEN_GAMES = 0.6
+
+
+def with_retries(fn, what):
+    """Run an NBA API call, retrying with a growing pause (5s, 10s, 20s). Database errors are NOT retried."""
+    for attempt in range(1, API_TRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == API_TRIES:
+                raise
+            wait = 5 * 2 ** (attempt - 1)
+            print(f"  {what}: {type(e).__name__}, retrying in {wait}s ({attempt}/{API_TRIES - 1})")
+            time.sleep(wait)
 
 
 def season_for_date(d: date) -> str:
@@ -92,7 +119,7 @@ def run_for_date(target_date: date) -> int:
     season_id = season_for_date(target_date)
 
     print(f"Finding games for {target_date.isoformat()}...")
-    games = get_completed_games_with_home_away(target_date.isoformat())
+    games = with_retries(lambda: get_completed_games_with_home_away(target_date.isoformat()), "scoreboard")
     print(f"{len(games)} completed game(s) found.")
 
     conn = get_connection()
@@ -101,7 +128,8 @@ def run_for_date(target_date: date) -> int:
 
     for i, g in enumerate(games, start=1):
         try:
-            box = boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=g["game_id"])
+            box = with_retries(lambda: boxscoretraditionalv3.BoxScoreTraditionalV3(game_id=g["game_id"], timeout=API_TIMEOUT),
+                               f"box score {g['game_id']}")
             dfs = box.get_data_frames()
             player_stats, team_stats = dfs[0], dfs[2]  # confirmed frame order, 8/10/26
 
@@ -112,7 +140,7 @@ def run_for_date(target_date: date) -> int:
 
             n = load_game_logs(cleaned, conn)
             total_inserted += n
-            print(f"[{i}/{len(games)}] game_id {g['game_id']}: {n} rows")
+            print(f"[{i}/{len(games)}] game_id {g['game_id']}: {n} row(s) new or corrected")
         except Exception as e:
             print(f"[{i}/{len(games)}] game_id {g['game_id']}: FAILED — {e}")
             failures.append((g["game_id"], str(e)))
@@ -123,9 +151,11 @@ def run_for_date(target_date: date) -> int:
             # silently cost an entire night's data without this.
             conn.rollback()
 
+        time.sleep(SLEEP_BETWEEN_GAMES)
+
     conn.close()
 
-    print(f"Inserted {total_inserted} row(s) for {target_date.isoformat()}.")
+    print(f"{total_inserted} row(s) new or corrected for {target_date.isoformat()}.")
     if failures:
         print(f"{len(failures)} game(s) failed:")
         for gid, err in failures:
@@ -159,14 +189,19 @@ def main():
         raise ValueError(f"start date {start_date} is after end date {end_date}")
 
     grand_total = 0
+    failed_days = []
     for target_date in daterange(start_date, end_date):
         print(f"\n{'=' * 60}")
         print(f"Processing {target_date.isoformat()}")
         print(f"{'=' * 60}")
-        grand_total += run_for_date(target_date)
+        try:
+            grand_total += run_for_date(target_date)
+        except Exception as e:   # e.g. the scoreboard timed out for good: keep going with the other days
+            print(f"DAY FAILED {target_date.isoformat()}: {type(e).__name__}: {e}")
+            failed_days.append(target_date.isoformat())
 
     print(f"\n{'=' * 60}")
-    print(f"Done. {grand_total} total row(s) inserted across "
+    print(f"Done. {grand_total} total row(s) new or corrected across "
           f"{(end_date - start_date).days + 1} day(s).")
 
     print("\nSyncing game_fantasy_scores_weekly_effective once for the whole run")
@@ -177,6 +212,10 @@ def main():
         print(f"Synced {n_synced} new row(s).")
     finally:
         sync_conn.close()
+
+    if failed_days:
+        print(f"\n{len(failed_days)} day(s) could not be loaded: {', '.join(failed_days)}")
+        sys.exit(1)   # run_daily retries the step once; the audit flags anything still missing
 
 
 if __name__ == "__main__":

@@ -25,6 +25,13 @@ night in load_daily_game_logs.py and load_daily_team_schedule.py, missed
 here on the first pass. Surfaced via backfill_single_player.py, which
 imports from this file and hit the same ModuleNotFoundError. Moved to
 the top, right after importing sys/Path, before any local import.
+
+CHANGED 10/31/26: the INSERT now UPDATES an existing row when any stat differs
+(ON CONFLICT DO UPDATE ... WHERE the row is distinct), instead of skipping it.
+The NBA corrects box scores up to a day or more after the final whistle (a
+steal or rebound re-credited), and DO NOTHING froze whatever was first saved.
+Every changed value is written to game_log_changes (old and new) so a
+correction is visible. The return value is now rows new or corrected.
 """
 
 import sys
@@ -105,26 +112,49 @@ def fetch_and_clean_one_player(player_id: int, season: str, team_lookup: dict) -
     return cleaned[GAME_LOGS_COLUMNS]
 
 
+KEY_COLUMNS = ["game_id", "player_id"]
+VALUE_COLUMNS = [c for c in GAME_LOGS_COLUMNS if c not in KEY_COLUMNS]
+
+CHANGE_LOG_DDL = """CREATE TABLE IF NOT EXISTS game_log_changes (
+    changed_at timestamptz NOT NULL DEFAULT now(), game_id text NOT NULL, player_id text NOT NULL,
+    column_name text NOT NULL, old_value text, new_value text)"""
+
+
 def load_game_logs(df: pd.DataFrame, conn) -> int:
+    """Insert new box-score rows and correct existing ones. Returns rows new or corrected."""
     if df.empty:
         return 0
+    df = df.drop_duplicates(subset=KEY_COLUMNS, keep="last")
 
     cur = conn.cursor()
+    cur.execute(CHANGE_LOG_DDL)
+    cur.execute("CREATE TEMP TABLE _incoming (LIKE game_logs) ON COMMIT DROP")
     rows = list(df.itertuples(index=False, name=None))
+    execute_values(cur, f"INSERT INTO _incoming ({', '.join(GAME_LOGS_COLUMNS)}) VALUES %s", rows)
 
-    execute_values(
-        cur,
-        f"""
-        INSERT INTO game_logs ({", ".join(GAME_LOGS_COLUMNS)})
-        VALUES %s
-        ON CONFLICT (game_id, player_id) DO NOTHING
-        """,
-        rows,
-    )
-    n_inserted = cur.rowcount  # actual rows Postgres wrote -- excludes ON CONFLICT DO NOTHING skips
+    pairs = ", ".join(f"('{c}', g.{c}::text, i.{c}::text)" for c in VALUE_COLUMNS)
+    cur.execute(f"""
+        INSERT INTO game_log_changes (game_id, player_id, column_name, old_value, new_value)
+        SELECT g.game_id::text, g.player_id::text, c.col, c.old_v, c.new_v
+        FROM game_logs g
+        JOIN _incoming i ON i.game_id = g.game_id AND i.player_id = g.player_id
+        CROSS JOIN LATERAL (VALUES {pairs}) AS c(col, old_v, new_v)
+        WHERE c.old_v IS DISTINCT FROM c.new_v
+        """)
+
+    set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in VALUE_COLUMNS)
+    old_row = ", ".join(f"game_logs.{c}" for c in VALUE_COLUMNS)
+    new_row = ", ".join(f"EXCLUDED.{c}" for c in VALUE_COLUMNS)
+    cur.execute(f"""
+        INSERT INTO game_logs ({', '.join(GAME_LOGS_COLUMNS)})
+        SELECT {', '.join(GAME_LOGS_COLUMNS)} FROM _incoming
+        ON CONFLICT (game_id, player_id) DO UPDATE SET {set_clause}
+        WHERE ({old_row}) IS DISTINCT FROM ({new_row})
+        """)
+    n_changed = cur.rowcount  # rows Postgres wrote: new rows plus rows whose stats changed
     conn.commit()
     cur.close()
-    return n_inserted
+    return n_changed
 
 
 def main():

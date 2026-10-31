@@ -35,6 +35,13 @@ testing. Matches the existing project convention (0.6s in
 load_game_logs.py, 0.3s in backfill_sleeper_league.py) rather than
 inventing a new number.
 
+CHANGED 10/31/26: this script now UPDATES existing rows (upsert_team_schedule
+below) instead of reusing load_team_schedule()'s DO NOTHING insert. The season
+schedule is loaded first with blank results; DO NOTHING meant the real result
+(wl, pts, plus_minus) never replaced the blank, so 78 of 81 played games had
+no official result. A moved game date is also picked up. The full-season
+script load_team_schedule.py is unchanged.
+
 Run:
     python scripts/load_daily_team_schedule.py                        (yesterday only, unchanged default)
     python scripts/load_daily_team_schedule.py YYYY-MM-DD              (single day, unchanged)
@@ -51,10 +58,41 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from nba_api.stats.static import teams as nba_teams
 from get_team_schedule import get_team_schedule
 from data_cleaning_team_schedule import clean_team_schedule
-from load_team_schedule import load_team_schedule, TEAM_SCHEDULE_COLUMNS, build_team_lookup
+from psycopg2.extras import execute_values
+from load_team_schedule import TEAM_SCHEDULE_COLUMNS, build_team_lookup
 from db_connection import get_connection
 
 SLEEP_SECONDS_BETWEEN_CALLS = 0.6  # matches load_game_logs.py's convention
+
+
+RESULT_COLUMNS = ("wl", "pts", "plus_minus")  # a blank incoming value never erases a saved result
+UPDATE_COLUMNS = [c for c in ("opponent_team_id", "game_date", "is_home", "wl", "pts", "plus_minus") if c in TEAM_SCHEDULE_COLUMNS]
+
+
+def upsert_team_schedule(df, conn) -> int:
+    """Insert new team-game rows and update existing ones. Returns rows new or changed."""
+    if df.empty:
+        return 0
+    df = df.drop_duplicates(subset=["game_id", "team_id"], keep="last")
+    new_vals = {c: (f"COALESCE(EXCLUDED.{c}, team_schedule.{c})" if c in RESULT_COLUMNS else f"EXCLUDED.{c}") for c in UPDATE_COLUMNS}
+    set_clause = ", ".join(f"{c} = {new_vals[c]}" for c in UPDATE_COLUMNS)
+    old_row = ", ".join(f"team_schedule.{c}" for c in UPDATE_COLUMNS)
+    new_row = ", ".join(new_vals[c] for c in UPDATE_COLUMNS)
+    cur = conn.cursor()
+    execute_values(
+        cur,
+        f"""
+        INSERT INTO team_schedule ({", ".join(TEAM_SCHEDULE_COLUMNS)})
+        VALUES %s
+        ON CONFLICT (game_id, team_id) DO UPDATE SET {set_clause}
+        WHERE ({old_row}) IS DISTINCT FROM ({new_row})
+        """,
+        list(df.itertuples(index=False, name=None)),
+    )
+    n = cur.rowcount
+    conn.commit()
+    cur.close()
+    return n
 
 
 def season_for_date(d: date) -> str:
@@ -97,9 +135,9 @@ def run_for_date(target_date: date) -> int:
                 "GAME_DATE": "game_date", "WL": "wl", "PTS": "pts", "PLUS_MINUS": "plus_minus",
             })[TEAM_SCHEDULE_COLUMNS]
 
-            n = load_team_schedule(cleaned, conn)
+            n = upsert_team_schedule(cleaned, conn)
             total_inserted += n
-            print(f"[{i}/{len(all_teams)}] {t['full_name']}: {n} rows")
+            print(f"[{i}/{len(all_teams)}] {t['full_name']}: {n} row(s) new or updated")
         except Exception as e:
             print(f"[{i}/{len(all_teams)}] {t['full_name']}: FAILED — {e}")
             failures.append((t["full_name"], str(e)))
@@ -113,7 +151,7 @@ def run_for_date(target_date: date) -> int:
 
     conn.close()
 
-    print(f"Inserted {total_inserted} row(s) for {target_date.isoformat()}.")
+    print(f"{total_inserted} row(s) new or updated for {target_date.isoformat()}.")
     if failures:
         print(f"{len(failures)} team(s) failed:")
         for name, err in failures:
@@ -143,7 +181,7 @@ def main():
         grand_total += run_for_date(target_date)
 
     print(f"\n{'=' * 60}")
-    print(f"Done. {grand_total} total row(s) inserted across "
+    print(f"Done. {grand_total} total row(s) new or updated across "
           f"{(end_date - start_date).days + 1} day(s).")
 
 

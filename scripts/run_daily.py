@@ -87,17 +87,21 @@ def unmatched_rostered_count():
     return n
 
 
-def build_steps(game_date, season_id, week, run_crosswalk):
+def build_steps(game_date, season_id, week, run_crosswalk, lookback=2):
+    """lookback: days before game_date that the game-log and team-schedule loaders re-pull, so a stat the NBA
+    corrects a day or two later overwrites the saved number. 0 = game_date only (the hourly lite run)."""
+    start = (date.fromisoformat(game_date) - timedelta(days=lookback)).isoformat() if lookback else game_date
+    window = [start, game_date] if lookback else [game_date]
     wk = ["--week", str(week)] if week else ["--week", "1"]
     psql = ["psql", "-d", "postgres"]
     return [
         ("season schedule (full, incl. upcoming)", [PY, "scripts/ingestion/load_season_schedule.py", "--write"], True),
-        ("team schedule (played games)", [PY, "scripts/ingestion/load_daily_team_schedule.py"], True),
+        ("team schedule (played games)", [PY, "scripts/ingestion/load_daily_team_schedule.py", *window], True),
         ("schedule growth check (in log)", [PY, "scripts/check_schedule_growth.py", "--season-id", str(season_id)], False),
         ("refresh b2b flags", [*psql, "-c", "REFRESH MATERIALIZED VIEW team_schedule_b2b_flags"], False),
         ("fantasy_weeks (additive)", [*psql, "-f", "schema/tables/fantasy_weeks.sql"], False),
         ("load players (static list)", [PY, "scripts/ingestion/load_players.py"], False),
-        ("game logs", [PY, "scripts/ingestion/load_daily_game_logs.py", game_date], True),
+        ("game logs", [PY, "scripts/ingestion/load_daily_game_logs.py", *window], True),
         ("backfill missing players", [PY, "scripts/ingestion/backfill_missing_players.py"], True),
         ("technical/flagrant foul scan", [PY, "scripts/backfill_technical_flagrant_fouls.py", "--season-id", str(season_id)], True),
         ("apply foul penalties to stored scores", [*psql, "-c",
@@ -108,6 +112,9 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         *([("sleeper crosswalk", [PY, "scripts/sleeper/build_sleeper_player_crosswalk.py"], False)] if run_crosswalk else []),
         ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
         ("table nba_lock_decisions (additive)", [*psql, "-f", "schema/tables/nba_lock_decisions.sql"], False),
+        ("refresh scores saved in nba_lock_decisions", [*psql, "-c",
+            "UPDATE nba_lock_decisions d SET fantasy_score = e.fantasy_score FROM game_fantasy_scores_weekly_effective e "
+            "WHERE e.game_id = d.game_id AND e.player_id = d.nba_player_id AND d.fantasy_score IS DISTINCT FROM e.fantasy_score"], False),
         ("infer locks from sleeper snapshots", [PY, "scripts/infer_lock_decisions.py", "--season-id", str(season_id)], False),
         ("view nba_week_reconciliation (additive)", [*psql, "-f", "models/nba_week_reconciliation.sql"], False),
         ("independent verify", [PY, "scripts/verify_current_league_independently.py", *wk], False),
@@ -129,7 +136,7 @@ def build_steps(game_date, season_id, week, run_crosswalk):
 FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
 MAX_HEAL_ROUNDS = 5
 LITE_STEPS = {"game logs", "audit game logs", "view nba_week_reconciliation (additive)", "health summary", "backfill missing players", "technical/flagrant foul scan", "apply foul penalties to stored scores",
-              "sleeper crosswalk", "sleeper sync", "table nba_lock_decisions (additive)", "infer locks from sleeper snapshots"}
+              "sleeper crosswalk", "sleeper sync", "table nba_lock_decisions (additive)", "refresh scores saved in nba_lock_decisions", "infer locks from sleeper snapshots"}
 
 
 def run_once(cmd, log):
@@ -195,7 +202,7 @@ def main():
     else:
         season_id, week = current_week(now.date())
         run_xw = unmatched_rostered_count() > 0
-        steps = build_steps(game_date, season_id, week, run_xw)
+        steps = build_steps(game_date, season_id, week, run_xw, 0 if args.lite else 2)
 
     if args.lite:
         steps = [x for x in steps if x[0] in LITE_STEPS]
