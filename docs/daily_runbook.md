@@ -154,6 +154,38 @@ It loads yesterday's games, stops at the first failure, writes
 `scripts/logs/daily_<date>.log`, and ends with the verifier and preflight.
 Run it AFTER the last West Coast game has finished (morning is fine).
 
+## Lock flags, corrections and monitoring (added 10/31/26)
+
+What runs each hour (`run_daily.py --lite`, launchd every 60 min) and each morning (full run, 08:30):
+- **Game logs and team results:** re-pulled for a rolling window, 2 days before the game date (10 days on Monday mornings, which re-checks the whole week that
+  just closed; `--lookback N` overrides). Anything the NBA corrected overwrites the saved number and is logged in `game_log_changes`.
+- **Score corrections:** `log_score_corrections.py` records each corrected player-game's score before and after (`game_score_corrections`), and the saved
+  lock rows are refreshed to the corrected score.
+- **Lock flags:** `scripts/sleeper/ingest_lock_flags.py` reads Sleeper's own lock flags for the current week (and the last week for 7 days) into
+  `sleeper_lock_flags`, matching Sleeper game ids to NBA games in `sleeper_game_map`. `infer_lock_decisions.py` then records them in `nba_lock_decisions` as
+  source `sleeper_flag`. `my_lock_report.py` reads that table, so a lock you make in the app is treated as used within the hour.
+- **Week end (Monday morning):** run `python scripts/infer_lock_decisions.py --week N --refinalize` once and read the output. Unflagged slots take the player's last
+  game of the week, and every team's nine slots must add up to Sleeper's final total (`fpts`), or the difference must be a logged NBA correction. The morning run
+  repeats this automatically for 7 days after a week closes.
+
+Reading `python scripts/health_summary.py` (one line per area; RED exits 1):
+- **lock flags:** YELLOW = no refresh for 6 h (Sleeper or the Mac is down); RED = 24 h, or a flagged game could not be matched to an NBA game. Run
+  `python scripts/sleeper/ingest_lock_flags.py` by hand and read its message; an unmatched game usually means `team_schedule` has not loaded that day.
+- **week N:** RED = a team's locks do not add up to Sleeper's total and no correction explains it; YELLOW = adds up but the lock choice is not proven.
+  "N differ only by a later NBA stat correction" is normal: Sleeper froze the pre-correction score.
+- **game logs minutes note:** YELLOW from the NBA's own box score minutes total being off; no fantasy effect.
+- **players:** RED = a rostered player has no `nba_player_id`; run `scripts/sleeper/build_sleeper_player_crosswalk.py` and fix by hand if it cannot match.
+- **Notifications:** the health step runs with `--notify`, so the Mac shows a notification when something needs you (any RED, or YELLOW on sleeper / lock flags),
+  once per change and once when it clears. A run that stops at a failed step sends its own alert. Notifications need the Mac awake and logged in.
+
+Scheduling needs an awake Mac: launchd does not wake a sleeping one, so hours asleep are hours not captured. Lock flags and results are state, not events, so the
+next run still reads the right values; what is lost is the hour-level `first_seen_at`. To wake it for the morning run:
+`sudo pmset repeat wakeorpoweron MTWRFSU 08:25:00` (cancel with `sudo pmset repeat cancel`). For game nights, keep it plugged in with the lid open, or move the
+schedule to an always-on machine (the end state; the pipeline needs no manual steps).
+
+Known open items: Portis Jr. double technical (game 0022600104); NBA corrections later than 10 days; unmatched crosswalk names (Veesaar, Quaintance, Brandon Williams)
+until one is rostered; week 1 totals for rosters 5 and 7 differ from Sleeper's by logged corrections.
+
 ## Do NOT run casually
 
 - `scripts/rebuild_lock_pipeline.py` has no --help: it just runs the whole

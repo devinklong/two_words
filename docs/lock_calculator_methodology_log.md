@@ -37,6 +37,11 @@ decision taken. Append new entries at the bottom of each section; do not rewrite
 | 10/27/26 | Frozen-slot rule on rosters 7 and 8 (known app answers) | Without a best-game gate 2 of 4 detections wrong (API lag); with gate + never-swapped-out rule 17 of 18 slots right | Gate and swap rule kept |
 | 10/27/26 | Week-end total check (nine slots must add to `fpts`) on rosters 7, 8 | Unique combination = the app's nine locked games, both teams | Used as the week-end step |
 | 10/28/26 | Technical/flagrant scan: 0 of 43 games this season had been scanned | After scan + stored-score refresh (50 rows lowered): rosters 5-9 each have one exact combination; 2.00 offsets gone | Scan + refresh added to `run_daily.py` |
+| 10/29/26 | Game-log audit coverage | Audit covered 3 of 81 games: `team_schedule` results were blank, so most games were skipped | Loaders changed from insert-once to upsert with a change log; audit now 81 of 81 |
+| 10/30/26 | Week 1 week-end solve on the values Sleeper itself reported after the week closed | Exactly one combination per team for 10 of 10 rosters; game-score checksum alone had picked wrong games for rosters 1, 3, 4, 5 by coincidence | Observed-values method is the primary week-end solve; checksum is the fallback |
+| 10/30/26 | Totals vs NBA corrections | Two rosters' Sleeper totals are lower or higher by the exact amount of a later NBA stat correction (Daniels -2.00; Clingan -2.00 and Reed +3.00) | Database follows the official NBA box score; the gap is stored as `explained_diff` and shown as explained |
+| 10/31/26 | Sleeper GraphQL `matchup_legs_raw.starters_games` vs the 64 week 1 locks proven by checksum | 64 agree, 0 disagree, 0 missing; all 26 unflagged slots equal the player's last game of the week | Flag adopted as the in-week lock signal (`sleeper_flag`); unflagged = auto last game |
+| 10/31/26 | App screenshots, all 10 week 1 rosters (90 slots) vs `nba_lock_decisions` | 87 exact to the cent; 3 differ by the corrections above; app shows a bold white score for a manual lock, gray for the auto-banked last game | Week 1 locks accepted as proven |
 
 ## 3. Incidents and what they taught
 
@@ -53,6 +58,20 @@ decision taken. Append new entries at the bottom of each section; do not rewrite
   slot, decided once; week-end check against `fpts`. The 'infer from final API state' rule (`sleeper_final`) was removed.
 - **10/28: technical fouls never scanned for the new season.** `run_daily.py` did not call the scan, and the weekly-effective table never updates stored rows,
   so 2.00 gaps appeared (Haliburton, Edwards, Jerome). Fixed with a daily scan and a refresh step.
+- **10/28-30: loaders froze early data.** `load_team_schedule` and `load_game_logs` used insert-once, so a box score pulled mid-game (first five minutes) or
+  a result the NBA corrected a day later never changed. Now both upsert, re-pull a rolling window (3 days; 10 on Monday mornings), and write every changed
+  value to `game_log_changes`. `log_score_corrections.py` turns those into before/after fantasy scores in `game_score_corrections`.
+- **10/29-30: stats.nba.com read timeouts** killed range loads (8 games on 10/28). Loader retries with 5/10/20 s backoff, 60 s timeout, 0.6 s between games, and
+  continues past a failed day (exit code 1 at the end). A game that fails on a rookie missing from `nba_players` is healed by `add_player_by_id.py` and reloaded.
+- **10/30: Sleeper freezes the week's total; the NBA corrects later.** Sleeper's final week total can hold a pre-correction score (Daniels, Clingan, Reed).
+  Treated as two numbers: NBA official stats are the database truth, Sleeper's final is a frozen record, and each difference must be explained by a logged
+  correction (`explained_diff`) or it stays red.
+- **10/30: emptied slot and settled weeks.** A starter slot set to 0 in the latest snapshot dropped rosters 3 and 5 out of the week-end solve (now carried
+  forward), and weeks already marked settled were never rechecked (now re-derived for 7 days after the week ends).
+- **10/31: Sleeper does expose locks.** The REST matchups endpoint has no lock flag, but Sleeper's GraphQL `matchup_legs_raw(round, league_id)` answers
+  without a login and returns `starters_games`, a map of player to game for every starter the manager explicitly locked. Unlisted starters bank their last game
+  at week end. `scores(date, sport, season, season_type)` gives each game's date and teams, which is how Sleeper game ids are matched to NBA game ids.
+  `matchup_legs` (without `_raw`) needs a login and is not used.
 
 ## 4. Known assumptions and limits
 
@@ -64,3 +83,11 @@ decision taken. Append new entries at the bottom of each section; do not rewrite
 - A lock is detectable only after the player's next game (no lock flag in the public matchups endpoint); the app shows padlocks, source unknown.
 - Week-end total check: with 4-5 games per player, several combinations can add up to the same total; rosters 1, 2, 3, 4, 10 in week 1 are undetermined
   until checked against the app. A 'Double Technical' second player ('Portis Jr.', game 0022600104) could not be resolved by the scan.
+
+Updates 10/31/26 (these supersede the two week-end lines above):
+- A lock is now visible the hour it is made: `ingest_lock_flags.py` reads Sleeper's own flag every run and `infer_lock_decisions.py` records it as `sleeper_flag`
+  (only a manual entry can override it). The statistical in-week inference is no longer needed and stays off.
+- The week-end solve no longer guesses between combinations: flagged slots are fixed and the rest are solved from the values Sleeper reported. Week 1: 10 of 10 proven.
+- Still open: Portis Jr. 'Double Technical' (game 0022600104) is unresolved by the scan; one NBA minutes total (Indiana) is off in the NBA's own box score
+  (soft check, no fantasy effect); corrections the NBA makes more than 10 days after a game are not picked up; the flag and score pulls depend on the Mac
+  being awake (see the runbook); the flag's first_seen_at is the first run that saw it, not the exact lock time.
