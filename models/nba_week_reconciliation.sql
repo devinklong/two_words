@@ -8,7 +8,8 @@
 -- combinations add up to the same total; no_match = rows written 'unverified' and the totals do not agree.
 ALTER TABLE sleeper_roster_week_totals ADD COLUMN IF NOT EXISTS explained_diff numeric NOT NULL DEFAULT 0;
 
-CREATE OR REPLACE VIEW nba_week_reconciliation AS
+DROP VIEW IF EXISTS nba_week_reconciliation;
+CREATE VIEW nba_week_reconciliation AS
 SELECT t.league_id, t.season_id, t.week_number, t.roster_id, t.final_points,
        COALESCE(SUM(d.fantasy_score), 0) AS locked_points,
        COUNT(d.slot) AS slots,
