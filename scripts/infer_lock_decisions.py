@@ -12,7 +12,7 @@ and even a finished week was seen changing). Two steps, both automatic:
 Hand-entered rows (record_lock.py) are fixed constraints. The fpts total is read after the week closes; if Sleeper has not
 posted it yet the week simply waits for the next daily run.
 
-Usage (from ~/projects/two_words):  python scripts/infer_lock_decisions.py [--season-id 22026] [--week N] [--dry-run] [--recheck]
+Usage (from ~/projects/two_words):  python scripts/infer_lock_decisions.py [--season-id 22026] [--week N] [--dry-run] [--recheck] [--refinalize]
 """
 import argparse
 import itertools
@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 SLOT_ORDER = ["PG", "SG", "G", "SF", "PF", "F", "C", "UTIL1", "UTIL2"]
 TOL = 0.01
 BUFFER_DAYS = 2
+REFINALIZE_DAYS = 7   # a closed week is re-derived for this many days: the NBA corrects box scores and Sleeper's totals move
 
 
 def match_game(points, games):
@@ -115,7 +116,7 @@ def fetch_fpts(league):
             for r in data}
 
 
-def week_totals(cur, league, season_id, week, closed_weeks, dry):
+def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
     """{roster_id: (final_points, status)} for a CLOSED week, or None if not available yet. A week's total is Sleeper's
     season total minus the stored totals of the weeks before it; stored once so later weeks can use it."""
     cur.execute("SELECT to_regclass('sleeper_roster_week_totals')")
@@ -135,7 +136,7 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry):
             elif w < week:
                 prior[r] += float(pts)
                 prior_weeks.add(w)
-    if stored:
+    if stored and not refresh:
         return stored
     if any(w not in prior_weeks for w in closed_weeks if w < week):
         print(f"  week {week}: earlier week totals are missing, cannot derive this week's total yet; skipped")
@@ -144,7 +145,7 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry):
         fpts = fetch_fpts(league)
     except Exception as e:
         print(f"  week {week}: could not read Sleeper season totals ({e}); will retry next run")
-        return None
+        return stored or None
     derived = {r: round(v - prior[r], 2) for r, v in fpts.items()}
     if not derived or any(v <= 0 for v in derived.values()):
         print(f"  week {week}: Sleeper has not posted the final totals yet; will retry next run")
@@ -152,7 +153,9 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry):
     if not dry:
         for r, v in derived.items():
             cur.execute("""INSERT INTO sleeper_roster_week_totals (league_id, season_id, week_number, roster_id, final_points)
-                           VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (league, season_id, week, r, v))
+                           VALUES (%s,%s,%s,%s,%s)
+                           ON CONFLICT (league_id, season_id, week_number, roster_id)
+                           DO UPDATE SET final_points = EXCLUDED.final_points, recorded_at = now()""", (league, season_id, week, r, v))
     return {r: (v, None) for r, v in derived.items()}
 
 
@@ -183,7 +186,7 @@ def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source
 
 def finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found):
     """After the week is over: pick, per team, the combination of locked games that adds up to Sleeper's final total."""
-    totals = week_totals(cur, league, args.season_id, week, closed_weeks, args.dry_run)
+    totals = week_totals(cur, league, args.season_id, week, closed_weeks, args.dry_run, refresh=args.refinalize)
     if not totals:
         return 0
     cur.execute("""SELECT roster_id, slot, game_id, source FROM nba_lock_decisions
@@ -198,7 +201,7 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
         if roster not in totals:
             continue
         target_pts, status = totals[roster]
-        if status and not args.recheck:
+        if status and not (args.recheck or args.refinalize):
             continue   # already settled in an earlier run
         starters = last_starters[roster]
         cands, picks, priors, names = [], [], [], []
@@ -249,7 +252,9 @@ def main():
     ap.add_argument("--week", type=int)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--recheck", action="store_true", help="dry-run only: ignore rows already recorded, to test the inference against known locks")
+    ap.add_argument("--refinalize", action="store_true", help="re-derive closed weeks even if settled (automatic for weeks that ended within the last 7 days)")
     args = ap.parse_args()
+    force_refinalize = args.refinalize
 
     from db_connection import get_connection
     conn = get_connection()
@@ -287,7 +292,9 @@ def main():
             if len(starters) != len(SLOT_ORDER) or len(pts or []) != len(SLOT_ORDER):
                 print(f"  week {week} roster {roster}: {len(starters)} starters, expected {len(SLOT_ORDER)}; skipped")
                 continue
-            last_starters[roster] = starters
+            prev = last_starters.get(roster)
+            starters = [(prev[i] if prev and str(sid) in ("0", "", "None") else sid) for i, sid in enumerate(starters)]
+            last_starters[roster] = starters   # an emptied slot keeps the last player who held it that week
             for i, slot in enumerate(SLOT_ORDER):
                 sid = starters[i]
                 per_slot[(roster, slot)].append((ts, sid, (xw.get(sid) or (None, None))[0], pts[i]))
@@ -307,6 +314,7 @@ def main():
             if not args.dry_run:
                 record(cur, league, roster, args.season_id, week, slot, r["pid"], r["nba"], name, g, "sleeper_frozen")
         if week_over:
+            args.refinalize = force_refinalize or (now.date() - week_end).days <= REFINALIZE_DAYS
             total += finalize_week(cur, args, league, week, games, last_starters, xw, closed_weeks, found)
     if not args.dry_run:
         conn.commit()
