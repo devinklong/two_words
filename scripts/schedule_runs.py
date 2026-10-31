@@ -1,7 +1,7 @@
 """Schedule the daily pipeline on this Mac with launchd so nobody has to remember to run it.
 
   morning : full run_daily.py once a day at 08:30 (loads yesterday, everything)
-  lite    : run_daily.py --lite every 2 hours (game logs, foul scan, sleeper sync, lock inference), so the lock evidence
+  lite    : run_daily.py --lite every hour (game logs, foul scan, sleeper sync, lock inference), so the lock evidence
             is captured through game nights. Overlapping runs skip themselves (lock file in run_daily.py).
 
 Usage (from ~/projects/two_words):
@@ -24,7 +24,7 @@ LOGS = ROOT / "scripts" / "logs"
 AGENTS = Path.home() / "Library" / "LaunchAgents"
 JOBS = {
     "com.two_words.morning": {"args": ["--keep-going"], "schedule": {"StartCalendarInterval": {"Hour": 8, "Minute": 30}}},
-    "com.two_words.lite": {"args": ["--lite", "--keep-going"], "schedule": {"StartInterval": 7200}},
+    "com.two_words.lite": {"args": ["--lite", "--keep-going"], "schedule": {"StartInterval": 3600}},
 }
 
 
