@@ -27,15 +27,23 @@ def gather(cur, season_id, today, now):
     if not audit:
         out.append(("game logs", "RED", "audit has never run"))
     else:
-        bad = [f"{n} ({i})" for n, i, _ in audit if i]
+        bad = [f"{n} ({i})" for n, i, _ in audit if i and n != "minutes"]
+        notes = [f"{n} ({i})" for n, i, _ in audit if i and n == "minutes"]
         pend = sum(p for _, _, p in audit)
-        out.append(("game logs", "RED" if bad else "GREEN",
-                    ("issues: " + ", ".join(bad)) if bad else f"{len(audit)} checks clear" + (f", {pend} pending today" if pend else "")))
+        out.append(("game logs", "RED" if bad else "YELLOW" if notes else "GREEN",
+                    ("issues: " + ", ".join(bad)) if bad else (f"{len(audit)} checks run" + (f", note: {', '.join(notes)} minute total off in the NBA's own box score" if notes else " clear")
+                                                                 + (f", {pend} pending today" if pend else ""))))
     cur.execute("""SELECT COUNT(DISTINCT ts.game_id), COUNT(DISTINCT l.game_id) FROM team_schedule ts
                    LEFT JOIN technical_flagrant_scan_log l ON l.game_id = ts.game_id
                    WHERE ts.season_id = %s AND ts.wl IS NOT NULL AND ts.game_date < %s""", (season_id, today))
     played, scanned = cur.fetchone()
     out.append(("foul scan", "GREEN" if played == scanned else "RED", f"{scanned} of {played} played games scanned"))
+    cur.execute("SELECT to_regclass('game_log_changes')")
+    if cur.fetchone()[0]:
+        cur.execute("""SELECT COUNT(DISTINCT game_id || '/' || player_id), COUNT(DISTINCT game_id) FROM game_log_changes
+                       WHERE changed_at > now() - interval '24 hours'""")
+        lines, games = cur.fetchone()
+        out.append(("corrections", "GREEN", f"{lines} player line(s) in {games} game(s) corrected by the NBA in the last 24 h"))
     cur.execute("SELECT MAX(synced_at) FROM sleeper_matchup_points_snapshots")
     last = cur.fetchone()[0]
     if last is None:

@@ -12,6 +12,8 @@ Results are printed and stored in nba_game_log_audit (one row per check per run)
   foul scan      every played game has been scanned for technical/flagrant fouls
   scores table   every game_logs row has its row in game_fantasy_scores_weekly_effective
 Today's games (not necessarily published yet) are reported as pending, not as issues.
+The minutes check is a NOTE, not a failure: the NBA's own box score for a game can add up to a few minutes under
+240 (game 0022600090: 230 with every point and result matching), which nothing on our side can fix.
 
 Usage (from ~/projects/two_words):  python scripts/audit_game_logs.py [--season-id 22026]
 """
@@ -23,6 +25,8 @@ from zoneinfo import ZoneInfo
 DDL = """CREATE TABLE IF NOT EXISTS nba_game_log_audit (
     run_at timestamptz NOT NULL DEFAULT now(), season_id text NOT NULL, check_name text NOT NULL,
     issues integer NOT NULL, pending integer NOT NULL DEFAULT 0, sample text)"""
+
+SOFT_CHECKS = {"minutes"}   # reported, but never fail the run
 
 PLAYED = "ts.wl IS NOT NULL AND ts.season_id = %(s)s"
 
@@ -87,12 +91,12 @@ def main():
     results = run_checks(cur, args.season_id, today)
     bad = 0
     for name, issues, pending, sample in results:
-        flag = "OK " if not issues else "ISSUES"
+        flag = "OK " if not issues else "NOTE" if name in SOFT_CHECKS else "ISSUES"
         extra = f"  ({pending} pending today)" if pending else ""
         print(f"  {flag:<6} {name:<14} {issues}{extra}" + (f"   e.g. {sample}" if sample else ""))
         cur.execute("INSERT INTO nba_game_log_audit (season_id, check_name, issues, pending, sample) VALUES (%s,%s,%s,%s,%s)",
                     (args.season_id, name, issues, pending, sample or None))
-        bad += bool(issues)
+        bad += bool(issues) and name not in SOFT_CHECKS
     conn.commit()
     cur.execute("SELECT COUNT(DISTINCT game_id), COUNT(*) FROM game_logs WHERE season_id = %s", (args.season_id,))
     games, rows = cur.fetchone()
