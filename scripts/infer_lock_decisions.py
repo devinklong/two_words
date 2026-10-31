@@ -212,6 +212,11 @@ def flag_locks(cur, args, league, week, games, xw):
     return covered
 
 
+def cur_has_flags(cur):
+    cur.execute("SELECT to_regclass('sleeper_lock_flags')")
+    return cur.fetchone()[0] is not None
+
+
 OBS_TOL = 0.011
 
 
@@ -421,7 +426,16 @@ def main():
                 per_slot[(roster, slot)].append((ts, sid, (xw.get(sid) or (None, None))[0], pts[i]))
         week_over = now.date() > week_end
         found = {}
-        for (roster, slot), states in per_slot.items():
+        # Sleeper's own flags list every explicit lock, so a slot with no flag is not locked yet. The older guess from frozen
+        # points (which once called Queen locked) is used only where the flag tables do not exist, or under --recheck.
+        flags_on = cur_has_flags(cur) and not args.recheck
+        if flags_on and not args.dry_run:
+            cur.execute("""DELETE FROM nba_lock_decisions d WHERE d.league_id = %s AND d.week_number = %s AND d.source = 'sleeper_frozen'
+                           AND NOT EXISTS (SELECT 1 FROM sleeper_lock_flags f WHERE f.league_id = d.league_id AND f.week_number = d.week_number
+                                           AND f.roster_id = d.roster_id AND f.slot = d.slot)""", (league, week))
+            if cur.rowcount:
+                print(f"  week {week}: removed {cur.rowcount} guessed lock(s) that Sleeper's flags do not show as locked")
+        for (roster, slot), states in ([] if flags_on else per_slot.items()):
             if (roster, slot) in done and not args.recheck:
                 continue
             res = infer_slot(states, games, now)
