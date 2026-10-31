@@ -109,6 +109,7 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         ("sleeper sync", [PY, "scripts/sleeper/run_daily_sync.py"], False),
         ("table nba_lock_decisions (additive)", [*psql, "-f", "schema/tables/nba_lock_decisions.sql"], False),
         ("infer locks from sleeper snapshots", [PY, "scripts/infer_lock_decisions.py", "--season-id", str(season_id)], False),
+        ("view nba_week_reconciliation (additive)", [*psql, "-f", "models/nba_week_reconciliation.sql"], False),
         ("independent verify", [PY, "scripts/verify_current_league_independently.py", *wk], False),
         ("current teams table", [*psql, "-f", "schema/tables/nba_player_current_team.sql"], False),
         ("current teams (nba_api snapshot)", [PY, "scripts/ingestion/load_current_teams.py", "--write"], True),
@@ -121,12 +122,13 @@ def build_steps(game_date, season_id, week, run_crosswalk):
         ("my lock report smoke (in log)", [PY, "scripts/my_lock_report.py", "--roster-id", str(MY_ROSTER_ID), "--season-id", str(season_id)], False),
         ("opponent scout smoke (in log)", [PY, "scripts/opponent_scout.py", str(MY_ROSTER_ID), *wk, "--season-id", str(season_id)], False),
         ("preflight", [PY, "scripts/season_opener_preflight.py", *wk], False),
+        ("health summary", [PY, "scripts/health_summary.py", "--season-id", str(season_id)], False),
     ]
 
 
 FK_MISSING_PLAYER = re.compile(r"Key \(player_id\)=\((\d+)\) is not present in table \"nba_players\"")
 MAX_HEAL_ROUNDS = 5
-LITE_STEPS = {"game logs", "audit game logs", "backfill missing players", "technical/flagrant foul scan", "apply foul penalties to stored scores",
+LITE_STEPS = {"game logs", "audit game logs", "view nba_week_reconciliation (additive)", "health summary", "backfill missing players", "technical/flagrant foul scan", "apply foul penalties to stored scores",
               "sleeper crosswalk", "sleeper sync", "table nba_lock_decisions (additive)", "infer locks from sleeper snapshots"}
 
 
