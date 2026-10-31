@@ -7,7 +7,7 @@ Results are printed and stored in nba_game_log_audit (one row per check per run)
   team points    sum of the players' pts == the team's official pts (team_schedule)
   result         game_logs.wl == team_schedule.wl for every player row
   row points     each row: pts == 2*(fgm-fg3m) + 3*fg3m + ftm
-  minutes        a team's minutes add up to 235-300 (240 + overtime)
+  minutes        a team's minutes add up to 240-300 (240 + overtime), allowing 1 min of rounding per player (whole minutes)
   roster size    at least 8 players per team per game
   foul scan      every played game has been scanned for technical/flagrant fouls
   scores table   every game_logs row has its row in game_fantasy_scores_weekly_effective
@@ -47,7 +47,7 @@ CHECKS = {
     "minutes": (
         f"""SELECT g.game_id || ' team ' || g.team_id || ': ' || SUM(g.minutes) || ' min', ts.game_date
             FROM team_schedule ts JOIN game_logs g ON g.game_id = ts.game_id AND g.team_id = ts.team_id
-            WHERE {PLAYED} GROUP BY g.game_id, g.team_id, ts.game_date HAVING SUM(g.minutes) NOT BETWEEN 235 AND 300""", True),
+            WHERE {PLAYED} GROUP BY g.game_id, g.team_id, ts.game_date HAVING SUM(g.minutes) + COUNT(*) < 240 OR SUM(g.minutes) > 300""", True),
     "roster size": (
         f"""SELECT g.game_id || ' team ' || g.team_id || ': ' || COUNT(*) || ' players', ts.game_date
             FROM team_schedule ts JOIN game_logs g ON g.game_id = ts.game_id AND g.team_id = ts.team_id
