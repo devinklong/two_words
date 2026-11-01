@@ -5,6 +5,7 @@
   sleeper     age of the newest matchup snapshot: YELLOW over 6 hours, RED over 24
   lock flags  Sleeper's own lock flags for the current week: YELLOW if not refreshed for 6 hours (RED 24), or if a flagged game
               cannot be matched to an NBA game (RED)
+  injuries    Sleeper injury feed (sleeper_injury_runs): YELLOW if not read for 30 h, RED after 72 h
   players     rostered players without an NBA id: RED if any
   weeks       closed weeks (nba_week_reconciliation): RED if a team's locked games do not add up to Sleeper's final score;
               YELLOW if scores add up but the lock choice is not proven (several combinations fit)
@@ -74,6 +75,15 @@ def gather(cur, season_id, today, now):
             msg = f"week {wk}: {n} locked starter(s) read from Sleeper" + (f", newest {hours:.1f} h old" if hours is not None else "")
             msg += f", {unmatched} on a game not matched to an NBA game" if unmatched else ""
             out.append(("lock flags", level, msg))
+    cur.execute("SELECT to_regclass('sleeper_injury_runs')")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT MAX(fetched_at), (SELECT flagged FROM sleeper_injury_runs ORDER BY fetched_at DESC LIMIT 1) FROM sleeper_injury_runs")
+        got, flagged = cur.fetchone()
+        if got is None:
+            out.append(("injuries", "YELLOW", "injury feed has never run"))
+        else:
+            hrs = (now - got).total_seconds() / 3600
+            out.append(("injuries", "GREEN" if hrs <= 30 else "YELLOW" if hrs <= 72 else "RED", f"{flagged} player(s) listed, feed read {hrs:.0f} h ago"))
     cur.execute("SELECT COUNT(*) FROM roster_ownership WHERE nba_player_id IS NULL")
     n = cur.fetchone()[0]
     out.append(("players", "GREEN" if n == 0 else "RED", f"{n} rostered player(s) without an NBA id"))
@@ -88,7 +98,7 @@ def gather(cur, season_id, today, now):
     return out
 
 
-ALERT_YELLOW = ("sleeper", "lock flags")   # yellow in these areas needs you; the minutes note and the like do not
+ALERT_YELLOW = ("sleeper", "lock flags", "injuries")   # yellow in these areas needs you; the minutes note and the like do not
 STATE = Path(__file__).resolve().parent / "logs" / ".health_notified"
 
 

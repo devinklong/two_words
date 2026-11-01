@@ -27,7 +27,7 @@ Columns:
           one slot in that tier, take the slot with the FEWEST games left among the rest of your
           roster, because it is the hardest to fill later (e.g. a PG/SG when PG-eligible players
           have more games coming than SG-eligible ones -> SG). Games left count every other
-          player on your roster (no injury or lineup knowledge) from the day after the report date
+          player on your roster except taxi and anyone Sleeper lists as Out (no other injury knowledge) from the day after the report date
           through the end of the fantasy week. Slots you already locked are read from
           nba_lock_decisions (record them with scripts/record_lock.py); --filled / --locked still work as overrides.
 Starters ('S') are the players in your lineup now.
@@ -154,6 +154,8 @@ def format_rows(rows):
         lens = r.get("lens")
         if not lens:
             lens_txt = "-"
+        elif lens["call"] == "TAKEN":
+            lens_txt = f"TAKEN (better scores fill the slots)"
         elif lens["bar"] <= 0:
             lens_txt = f"{lens['call']} (no alternative) {lens['slot']}"   # nobody else left to fill that slot
         else:
@@ -170,6 +172,26 @@ def format_rows(rows):
     return lines
 
 
+def fetch_out(conn):
+    """{sleeper_player_id: injury_status} for players Sleeper lists as Out / IR right now (sleeper_injury_spells, read at most 3 days
+    old). Their remaining games this week are not counted. Empty when the injury feed has not run."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT to_regclass('sleeper_injury_spells'), to_regclass('sleeper_injury_runs')")
+        if not all(cur.fetchone()):
+            return {}
+        cur.execute("SELECT MAX(fetched_at) > now() - interval '3 days' FROM sleeper_injury_runs")
+        if not cur.fetchone()[0]:
+            return {}
+        cur.execute("SELECT sleeper_player_id, injury_status FROM sleeper_injury_spells WHERE ended_at IS NULL AND lower(coalesce(injury_status, '')) IN ('out', 'ir')")
+        return {sid: st for sid, st in cur.fetchall()}
+    except Exception:
+        conn.rollback()
+        return {}
+    finally:
+        cur.close()
+
+
 def recommend_slots(conn, rows, args, day):
     """Fills r['slot'] for LOCK rows; returns (ctx_ok, notes, supply)."""
     from waiver_bid_advisor import fetch_schedule_context, fetch_player_teams, fetch_taxi, POSITIONS_SQL
@@ -178,6 +200,7 @@ def recommend_slots(conn, rows, args, day):
     cur0 = conn.cursor()
     cur0.execute("SELECT league_id FROM sleeper_current_league")
     taxi = fetch_taxi(conn, cur0.fetchone()[0]).get(args.roster_id, set())
+    out = fetch_out(conn)
     cur0.execute(ROSTER_SQL, {"roster": args.roster_id})
     roster = cur0.fetchall()
     cur0.close()
@@ -218,7 +241,7 @@ def recommend_slots(conn, rows, args, day):
     if locked_by_sid:
         notes.append("Already locked: " + ", ".join(f"{nm}={sl}" for nm, sl in locked_by_sid.values()))
 
-    args.lens_state = {"roster": roster, "taxi": taxi, "locked": locked_by_sid}   # reused by apply_roster_lens
+    args.lens_state = {"roster": roster, "taxi": taxi, "locked": locked_by_sid, "out": out}   # reused by apply_roster_lens
     lockers = [r for r in rows if r["signal"] == "LOCK" and r["sid"] not in taxi and r["sid"] not in locked_by_sid]
     if not lockers:
         return True, notes, {}
@@ -233,7 +256,7 @@ def recommend_slots(conn, rows, args, day):
     locker_ids = {r["nba_id"] for r in lockers}
     candidates = []
     for sid, nba, _nm in roster:
-        if nba in locker_ids or sid in taxi or sid in locked_by_sid:
+        if nba in locker_ids or sid in taxi or sid in locked_by_sid or sid in out:
             continue
         team_id = teams.get(nba, (None, None))[0]
         dates = ctx["games"].get(team_id, set()) if team_id else set()
@@ -253,6 +276,9 @@ def recommend_slots(conn, rows, args, day):
     taxi_names = [nm for sid, _nba, nm in roster if sid in taxi]
     if taxi_names:
         notes.append("On taxi, not lockable: " + ", ".join(taxi_names))
+    out_names = [f"{nm} ({out[sid]})" for sid, _nba, nm in roster if sid in out and sid not in locked_by_sid]
+    if out_names:
+        notes.append("Listed out by Sleeper, remaining games not counted: " + ", ".join(out_names))
     return True, notes, supply
 
 
@@ -278,7 +304,7 @@ def apply_roster_lens(conn, rows, args, day):
     teams = fetch_player_teams(conn, [nba for _sid, nba, _nm in st["roster"]])
     alts = []
     for sid, nba, _nm in st["roster"]:
-        if sid in st["taxi"] or sid in st["locked"] or nba not in vals:
+        if sid in st["taxi"] or sid in st["locked"] or sid in st.get("out", {}) or nba not in vals:
             continue
         team_id = teams.get(nba, (None, None))[0]
         dates = sorted(d for d in ctx["games"].get(team_id, ()) if today < d <= ctx["end"]) if team_id else []
@@ -355,7 +381,7 @@ def main():
     print("Roster call: LOCK/HOLD by comparing the score with what the open slot is worth from your OTHER players' remaining games "
           "(margin vs that slot's bar). The Signal column is the player-only read; this one is about your roster. See scripts/roster_lens.py.")
     print("Lock into: position slots before G/F before UTIL; among eligible ones, the slot with the fewest games left for the rest of your roster.")
-    print("Assumes every slot is open unless you pass --filled; counts every rostered player except taxi (no injury knowledge).")
+    print("Assumes every slot is open unless you pass --filled; counts every rostered player except taxi and anyone Sleeper lists as Out (other injury statuses are not used yet).")
     print("Lock right: LOCK rows = how often a score this far above the bar was not beaten later that week (history);"
           " HOLD/PASS rows = the fitted below-bar curve (tier and games left). The signal itself comes from Score vs Bar.")
     if not rate_ok:

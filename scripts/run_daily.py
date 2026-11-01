@@ -116,6 +116,7 @@ def build_steps(game_date, season_id, week, run_crosswalk, lookback=2):
         ("refresh scores saved in nba_lock_decisions", [*psql, "-c",
             "UPDATE nba_lock_decisions d SET fantasy_score = e.fantasy_score FROM game_fantasy_scores_weekly_effective e "
             "WHERE e.game_id = d.game_id AND e.player_id = d.nba_player_id AND d.fantasy_score IS DISTINCT FROM e.fantasy_score"], False),
+        ("sleeper injury status", [PY, "scripts/sleeper/ingest_player_status.py"], False),
         ("sleeper lock flags", [PY, "scripts/sleeper/ingest_lock_flags.py", "--season-id", str(season_id)], False),
         ("infer locks from sleeper snapshots", [PY, "scripts/infer_lock_decisions.py", "--season-id", str(season_id)], False),
         ("view nba_week_reconciliation (additive)", [*psql, "-f", "models/nba_week_reconciliation.sql"], False),
