@@ -88,12 +88,12 @@ def gather(cur, season_id, today, now):
     n = cur.fetchone()[0]
     out.append(("players", "GREEN" if n == 0 else "RED", f"{n} rostered player(s) without an NBA id"))
     cur.execute("""SELECT week_number, COUNT(*), COUNT(*) FILTER (WHERE reconciled),
-                          COUNT(*) FILTER (WHERE checksum_status IN ('unique', 'offset')),
+                          COUNT(*) FILTER (WHERE checksum_status IN ('unique', 'offset', 'ruling')),
                           COUNT(*) FILTER (WHERE reconciled AND explained_diff <> 0)
                    FROM nba_week_reconciliation WHERE season_id = %s GROUP BY week_number ORDER BY week_number""", (season_id,))
     for week, teams, ok, proven, explained in cur.fetchall():
         level = "RED" if ok < teams else "GREEN" if proven == teams else "YELLOW"
-        msg = f"{ok}/{teams} teams add up to Sleeper's total; lock choice proven for {proven}/{teams}" + (f"; {explained} differ only by a later NBA stat correction" if explained else "")
+        msg = f"{ok}/{teams} teams add up to Sleeper's total; lock choice proven for {proven}/{teams}" + (f"; {explained} differ only by a later NBA stat correction or a commissioner ruling" if explained else "")
         out.append((f"week {week}", level, msg))
     return out
 

@@ -136,7 +136,7 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
                     (league, season_id))
         for w, r, pts, st in cur.fetchall():
             if w == week:
-                stored[r] = (float(pts), st)
+                stored[r] = (float(pts), st)   # status 'ruling' = a commissioner change; never re-derived (see record_ruling.py)
             elif w < week:
                 prior[r] += float(pts)
                 prior_weeks.add(w)
@@ -150,6 +150,7 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
         return stored
     if stored and not refresh:
         return stored
+    ruled = {r: v for r, v in stored.items() if v[1] == "ruling"}
     if any(w not in prior_weeks for w in closed_weeks if w < week):
         print(f"  week {week}: earlier week totals are missing, cannot derive this week's total yet; skipped")
         return None
@@ -164,11 +165,13 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
         return None
     if not dry:
         for r, v in derived.items():
+            if r in ruled:
+                continue
             cur.execute("""INSERT INTO sleeper_roster_week_totals (league_id, season_id, week_number, roster_id, final_points)
                            VALUES (%s,%s,%s,%s,%s)
                            ON CONFLICT (league_id, season_id, week_number, roster_id)
                            DO UPDATE SET final_points = EXCLUDED.final_points, recorded_at = now()""", (league, season_id, week, r, v))
-    return {r: (v, None) for r, v in derived.items()}
+    return {r: (ruled[r] if r in ruled else (v, None)) for r, v in derived.items()}
 
 
 def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source, overwrite=False, keep=("manual",)):
@@ -353,6 +356,8 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
         if roster not in totals:
             continue
         target_pts, status = totals[roster]
+        if status == "ruling":
+            continue   # the commissioner changed this total by hand; the locks stay NBA truth and the gap is recorded as explained_diff
         if status and not (args.recheck or args.refinalize):
             continue   # already settled in an earlier run
         starters = last_starters[roster]
