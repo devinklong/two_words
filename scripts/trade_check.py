@@ -69,7 +69,7 @@ def block(teams, mine, args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--partner", type=int, help="roster_id you are trading with")
+    ap.add_argument("--partner", type=int, help="roster_id you are trading with (found from --get names if omitted)")
     ap.add_argument("--block", help="name fragment of one of your players to shop to every team")
     ap.add_argument("--roster-id", type=int, default=8)
     ap.add_argument("--get", help="comma-separated name fragments from the partner's roster")
@@ -102,7 +102,19 @@ def main():
         block(teams, mine, args)
         return
     if not args.partner:
-        raise SystemExit("--partner is required unless --block is used")
+        if not args.get:
+            raise SystemExit("give --partner, or --get with player names so the owner can be found")
+        frags = [f.strip() for f in args.get.split(",") if f.strip()]
+        owners = {rid: [f for f in frags if any(fold(f) in fold(p["name"]) for p in t["players"])]
+                  for rid, t in teams.items() if rid != args.roster_id}
+        full = [rid for rid, hit in owners.items() if len(hit) == len(frags)]
+        if len(full) != 1:
+            for rid, hit in sorted(owners.items()):
+                if hit:
+                    print(f"roster {rid} ({teams[rid]['owner']}) has: {', '.join(hit)}")
+            raise SystemExit("no single team holds all of those players; pass --partner and ask for one team's players at a time")
+        args.partner = full[0]
+        print(f"found them on roster {args.partner} ({teams[args.partner]['owner']})")
     theirs = teams[args.partner]["players"]
 
     if args.list or not (args.get and args.give):
