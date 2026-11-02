@@ -140,6 +140,14 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
             elif w < week:
                 prior[r] += float(pts)
                 prior_weeks.add(w)
+    if any(w > week for w in closed_weeks):
+        # A week's total is Sleeper's season total minus the weeks before it. Once a LATER week has closed the season total includes
+        # that week too, so only the stored value is valid: never re-derive or refresh an older week (a forced refinalize of week 1
+        # after week 2 closed turned every team's 326-433 into week 1 + week 2).
+        if not stored:
+            print(f"  week {week}: a later week has closed and this week's total was never stored; cannot derive it now; skipped")
+            return None
+        return stored
     if stored and not refresh:
         return stored
     if any(w not in prior_weeks for w in closed_weeks if w < week):
@@ -210,6 +218,41 @@ def flag_locks(cur, args, league, week, games, xw):
         if not args.dry_run:
             record(cur, league, roster, args.season_id, week, slot, sid, nba, name, g, "sleeper_flag", overwrite=True)
     return covered
+
+
+IDS_DDL = """CREATE TABLE IF NOT EXISTS sleeper_player_ids (
+    sleeper_player_id text PRIMARY KEY, nba_player_id integer, player_name text, updated_at timestamptz NOT NULL DEFAULT now())"""
+
+
+def build_xw(cur, league, dry):
+    """{sleeper_player_id: (nba_player_id, name)} for every player who was on a roster at any run, not just today. A week is
+    re-checked for days after it closes, and a player dropped in between is no longer in roster_ownership (Reed, roster 5, week 1),
+    which left his slot without games. sleeper_player_ids keeps every id the runs have seen; it is filled from roster_ownership
+    each run and, once, from the locks already stored."""
+    if not dry:
+        cur.execute(IDS_DDL)
+        cur.execute("""INSERT INTO sleeper_player_ids (sleeper_player_id, nba_player_id, player_name)
+                       SELECT DISTINCT ON (sleeper_player_id) sleeper_player_id, nba_player_id, player_name FROM nba_lock_decisions
+                       WHERE sleeper_player_id IS NOT NULL AND nba_player_id IS NOT NULL ORDER BY sleeper_player_id, recorded_at DESC
+                       ON CONFLICT (sleeper_player_id) DO NOTHING""")
+        cur.execute("""INSERT INTO sleeper_player_ids (sleeper_player_id, nba_player_id, player_name)
+                       SELECT DISTINCT ON (sleeper_player_id) sleeper_player_id, nba_player_id, player_name FROM roster_ownership
+                       WHERE league_id = %s AND nba_player_id IS NOT NULL ORDER BY sleeper_player_id
+                       ON CONFLICT (sleeper_player_id) DO UPDATE SET nba_player_id = EXCLUDED.nba_player_id,
+                           player_name = EXCLUDED.player_name, updated_at = now()""", (league,))
+    xw = {}
+    cur.execute("""SELECT DISTINCT ON (sleeper_player_id) sleeper_player_id, nba_player_id, player_name FROM nba_lock_decisions
+                   WHERE sleeper_player_id IS NOT NULL AND nba_player_id IS NOT NULL ORDER BY sleeper_player_id, recorded_at DESC""")
+    xw.update({s: (n, nm) for s, n, nm in cur.fetchall()})
+    cur.execute("SELECT to_regclass('sleeper_player_ids')")
+    if cur.fetchone()[0]:
+        cur.execute("SELECT sleeper_player_id, nba_player_id, player_name FROM sleeper_player_ids")
+        xw.update({s: (n, nm) for s, n, nm in cur.fetchall()})
+    cur.execute("SELECT DISTINCT sleeper_player_id, nba_player_id, player_name FROM roster_ownership WHERE league_id = %s", (league,))
+    for s_, n, nm in cur.fetchall():
+        if n is not None or s_ not in xw:
+            xw[s_] = (n, nm)
+    return xw
 
 
 def cur_has_flags(cur):
@@ -392,8 +435,7 @@ def main():
     closed_weeks = [w for w, e in weeks.items() if date.today() > e]
     if args.week:
         weeks = {w: e for w, e in weeks.items() if w == args.week}
-    cur.execute("SELECT DISTINCT sleeper_player_id, nba_player_id, player_name FROM roster_ownership WHERE league_id = %s", (league,))
-    xw = {s: (n, nm) for s, n, nm in cur.fetchall()}
+    xw = build_xw(cur, league, args.dry_run)
     if args.recheck and not args.dry_run:
         raise SystemExit("--recheck only works with --dry-run (it would overwrite nothing, but it would print locks already recorded)")
     now = datetime.now(timezone.utc)
