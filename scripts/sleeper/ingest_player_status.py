@@ -34,12 +34,12 @@ DDL = [
 
 
 def flagged(p):
-    """(injury_status, body_part, notes, status) when the player is hurt or not active, else None."""
+    """(injury_status, body_part, notes, status) when Sleeper lists an injury status for the player, else None.
+    The status field is a code (ACT, FA, RET...) that says nothing about health, so only injury_status counts."""
     inj = (p.get("injury_status") or "").strip() or None
-    status = (p.get("status") or "").strip() or None
-    if not inj and (status or "Active").lower() in ("active", ""):
+    if not inj:
         return None
-    return inj, (p.get("injury_body_part") or None), (p.get("injury_notes") or None), status
+    return inj, (p.get("injury_body_part") or None), (p.get("injury_notes") or None), ((p.get("status") or "").strip() or None)
 
 
 def main():
@@ -58,7 +58,7 @@ def main():
         if f:
             name = p.get("full_name") or " ".join(x for x in (p.get("first_name"), p.get("last_name")) if x)
             now_hurt[str(pid)] = (name, *f, p.get("team"))
-    print(f"{len(players)} players read, {len(now_hurt)} with an injury status or not active")
+    print(f"{len(players)} players read, {len(now_hurt)} with an injury status")
     if args.dry_run:
         for pid, (name, inj, part, _n, status, team) in sorted(now_hurt.items(), key=lambda x: x[1][0] or "")[:40]:
             print(f"  {name} ({team}): {inj or '-'} {part or ''} [{status}]")
