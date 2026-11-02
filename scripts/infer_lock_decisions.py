@@ -284,6 +284,23 @@ def observed_options(states, final_sid, week_end, wk, original, nba):
     return out
 
 
+def unmatched_values(states, final_sid, week_end, wk, original, nba):
+    """[(value, times_seen)] Sleeper reported for this slot after the week ended that equal no game of the player's, neither at its
+    current score nor at its pre-correction score. Used to say WHY a team does not add up."""
+    seen = defaultdict(int)
+    for ts, sid, _nba, pts in states:
+        if sid == final_sid and pts and ts.astimezone().date() > week_end:
+            seen[round(float(pts), 2)] += 1
+    out = []
+    for v, n in sorted(seen.items()):
+        if any(abs(float(g["score"]) - v) <= OBS_TOL for g in wk):
+            continue
+        if any((g["id"], nba) in original and abs(original[(g["id"], nba)] / 100 - v) <= OBS_TOL for g in wk):
+            continue
+        out.append((v, n))
+    return out
+
+
 def solve_from_observed(obs, target):
     """obs: per slot, the options from observed_options (a slot with no games gets [(0, None, 0, 1)]).
     -> (choice, status, explained_cents) for the combination of REPORTED values that adds up to the final, else None."""
@@ -392,6 +409,13 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
         print(f"  week {week} roster {roster:>2}: final {target_pts:.2f} -> {label}")
         if sol is None:
             sol, source = priors, "unverified"
+            best = sum(cands[i][min(priors[i], len(cands[i]) - 1)] for i in range(len(SLOT_ORDER)))
+            print(f"      why: Sleeper's total is {target_pts:.2f}; the best picks add to {best / 100:.2f} ({(target - best) / 100:+.2f})")
+            for i, slot in enumerate(SLOT_ORDER):
+                odd = unmatched_values(per_slot.get((roster, slot), []), starters[i], week_end, picks[i], original, names[i][1])
+                if odd:
+                    his_games = ", ".join(f"{float(x['score']):.2f} on {x['date']}" for x in sorted(picks[i], key=lambda x: x["date"])) or "no games"
+                    print(f"      {slot:<5} {names[i][2]}: Sleeper reported {', '.join(f'{v:.2f} (x{n})' for v, n in odd)}, which is none of his games ({his_games})")
         else:
             source = "checksum" if st in ("unique", "offset") else "checksum_" + st
         for i, slot in enumerate(SLOT_ORDER):
