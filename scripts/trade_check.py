@@ -8,6 +8,7 @@ other team's lineup value does not fall much. Picks and FAAB are NOT modeled: th
 Usage (from ~/projects/two_words):
     python scripts/trade_check.py --partner 2 --list                              (both rosters with values + lineup totals)
     python scripts/trade_check.py --partner 2 --get Jokic --give "Zubac,Bane"     (one proposed trade)
+    python scripts/trade_check.py --block Giannis                                 (trading block: every team's gain and best 1-for-1 return)
 """
 import argparse
 import unicodedata
@@ -37,9 +38,39 @@ def evaluate(mine, theirs, get, give):
     return L(mine), L(my_after), L(theirs), L(th_after)
 
 
+def block(teams, mine, args):
+    """Shop one of your players to every team: what each team's best lineup gains from him, and the best 1-for-1 return for you."""
+    from lineup_fit import best_lineup_value
+    L = lambda ps: best_lineup_value([(p["v"], p["pos"]) for p in ps])
+    star = pick(mine, args.block)[0]
+    m0 = L(mine)
+    m_without = L([p for p in mine if p is not star])
+    print(f"\n{star['name']}: value {star['v']:.1f}; your best lineup {m0:.1f} -> {m_without:.1f} without him ({m_without - m0:+.1f}). Reserve: a return must lift you back above {m_without:.1f} by at least {m0 - m_without:.1f}.")
+    print(f"\n{'team':<4} {'owner':<16} {'their gain':>10}   best 1-for-1 return (they must not lose lineup value)")
+    rows = []
+    for rid, t in teams.items():
+        if rid == args.roster_id:
+            continue
+        theirs = t["players"]
+        t0 = L(theirs)
+        gain = L(theirs + [star]) - t0
+        best = None
+        for q in theirs:
+            my1 = L([p for p in mine if p is not star] + [q])
+            th1 = L([p for p in theirs if p is not q] + [star])
+            if th1 - t0 >= 0 and (best is None or my1 > best[0]):
+                best = (my1, q, th1 - t0)
+        rows.append((gain, rid, t["owner"], best))
+    for gain, rid, owner, best in sorted(rows, key=lambda r: -r[0]):
+        ret = f"{best[1]['name']} ({best[1]['v']:.1f}): you {best[0] - m0:+.1f} vs now, they {best[2]:+.1f}" if best else "none that leaves them at least even"
+        print(f"{rid:<4} {str(owner)[:16]:<16} {gain:>+10.1f}   {ret}")
+    print("\nOpen at the top team's best return, then add a second player or pick. Picks and FAAB are not modeled.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--partner", type=int, required=True, help="roster_id you are trading with")
+    ap.add_argument("--partner", type=int, help="roster_id you are trading with")
+    ap.add_argument("--block", help="name fragment of one of your players to shop to every team")
     ap.add_argument("--roster-id", type=int, default=8)
     ap.add_argument("--get", help="comma-separated name fragments from the partner's roster")
     ap.add_argument("--give", help="comma-separated name fragments from your roster")
@@ -66,7 +97,13 @@ def main():
         teams.setdefault(rid, {"owner": owner, "players": []})["players"].append(
             {"name": name or f"(unmatched, sleeper id {sid})", "v": values.get(nba, 0.0), "pos": positions.get(sid, [])})
     conn.close()
-    mine, theirs = teams[args.roster_id]["players"], teams[args.partner]["players"]
+    mine = teams[args.roster_id]["players"]
+    if args.block:
+        block(teams, mine, args)
+        return
+    if not args.partner:
+        raise SystemExit("--partner is required unless --block is used")
+    theirs = teams[args.partner]["players"]
 
     if args.list or not (args.get and args.give):
         from lineup_fit import best_lineup_value
