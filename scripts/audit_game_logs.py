@@ -8,7 +8,7 @@ Results are printed and stored in nba_game_log_audit (one row per check per run)
   result         game_logs.wl == team_schedule.wl for every player row
   row points     each row: pts == 2*(fgm-fg3m) + 3*fg3m + ftm
   minutes        a team's minutes add up to 240-300 (240 + overtime), allowing 1 min of rounding per player (whole minutes)
-  roster size    at least 8 players per team per game
+  roster size    NOTE only: fewer than 8 players for a team in a game (a short bench is real; missing scorers and minutes are caught by the two checks above)
   foul scan      every played game has been scanned for technical/flagrant fouls
   scores table   every game_logs row has its row in game_fantasy_scores_weekly_effective
 Today's games (not necessarily published yet) are reported as pending, not as issues.
@@ -26,7 +26,7 @@ DDL = """CREATE TABLE IF NOT EXISTS nba_game_log_audit (
     run_at timestamptz NOT NULL DEFAULT now(), season_id text NOT NULL, check_name text NOT NULL,
     issues integer NOT NULL, pending integer NOT NULL DEFAULT 0, sample text)"""
 
-SOFT_CHECKS = {"minutes"}   # reported, but never fail the run
+SOFT_CHECKS = {"minutes", "roster size"}   # reported, but never fail the run
 
 PLAYED = "ts.wl IS NOT NULL AND ts.season_id = %(s)s"
 

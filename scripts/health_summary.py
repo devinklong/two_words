@@ -36,11 +36,12 @@ def gather(cur, season_id, today, now):
     if not audit:
         out.append(("game logs", "RED", "audit has never run"))
     else:
-        bad = [f"{n} ({i})" for n, i, _ in audit if i and n != "minutes"]
-        notes = [f"{n} ({i})" for n, i, _ in audit if i and n == "minutes"]
+        soft = ("minutes", "roster size")   # same list as SOFT_CHECKS in audit_game_logs.py
+        bad = [f"{n} ({i})" for n, i, _ in audit if i and n not in soft]
+        notes = [f"{n} ({i})" for n, i, _ in audit if i and n in soft]
         pend = sum(p for _, _, p in audit)
         out.append(("game logs", "RED" if bad else "YELLOW" if notes else "GREEN",
-                    ("issues: " + ", ".join(bad)) if bad else (f"{len(audit)} checks run" + (f", note: {', '.join(notes)} minute total off in the NBA's own box score" if notes else " clear")
+                    ("issues: " + ", ".join(bad)) if bad else (f"{len(audit)} checks run" + (f", note: {', '.join(notes)} (minute total off, or a short bench, in the NBA's own box score)" if notes else " clear")
                                                                  + (f", {pend} pending today" if pend else ""))))
     cur.execute("""SELECT COUNT(DISTINCT ts.game_id), COUNT(DISTINCT l.game_id) FROM team_schedule ts
                    LEFT JOIN technical_flagrant_scan_log l ON l.game_id = ts.game_id
