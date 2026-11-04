@@ -173,7 +173,8 @@ Reading `python scripts/health_summary.py` (one line per area; RED exits 1):
   `python scripts/sleeper/ingest_lock_flags.py` by hand and read its message; an unmatched game usually means `team_schedule` has not loaded that day.
 - **week N:** RED = a team's locks do not add up to Sleeper's total and no correction explains it; YELLOW = adds up but the lock choice is not proven.
   "N differ only by a later NBA stat correction" is normal: Sleeper froze the pre-correction score.
-- **game logs minutes note:** YELLOW from the NBA's own box score minutes total being off; no fantasy effect.
+- **game logs note:** YELLOW from the NBA's own box score: a minutes total that is off, or a team that played with fewer than 8 players (roster size). Both are notes in the
+  audit; points and results still match, and there is no fantasy effect. Anything else in the audit is RED.
 - **players:** RED = a rostered player has no `nba_player_id`; run `scripts/sleeper/build_sleeper_player_crosswalk.py` and fix by hand if it cannot match.
 - **Notifications:** the health step runs with `--notify`, so the Mac shows a notification when something needs you (any RED, or YELLOW on sleeper / lock flags),
   once per change and once when it clears. A run that stops at a failed step sends its own alert. Notifications need the Mac awake and logged in.
@@ -185,6 +186,43 @@ schedule to an always-on machine (the end state; the pipeline needs no manual st
 
 Known open items: Portis Jr. double technical (game 0022600104); NBA corrections later than 10 days; unmatched crosswalk names (Veesaar, Quaintance, Brandon Williams)
 until one is rostered; week 1 totals for rosters 5 and 7 differ from Sleeper's by logged corrections.
+
+## Updates 11/4/26: injuries, rulings, absence history, verification
+
+- **Injury feed:** `scripts/sleeper/ingest_player_status.py` (morning run only, Sleeper asks for one read of its players file per day) keeps one row per continuous
+  injury spell in `sleeper_injury_spells` (open spell = `ended_at` NULL) and one row per read in `sleeper_injury_runs`. Only `injury_status` counts; Sleeper's `status`
+  field holds codes (ACT, FA, RET) that say nothing about health. A reply under 300 players is a bad read and writes nothing. `my_lock_report.py` leaves anyone
+  listed Out or IR out of games left. Health line "injuries": GREEN up to 30 h since the last read, YELLOW to 72 h, RED after.
+- **Dropped players:** `sleeper_player_ids` keeps the Sleeper to NBA id of every player ever seen, because roster lookups only hold current players (week 1 roster 5
+  could not solve once a dropped player was missing). `infer_lock_decisions.py` builds that map each run.
+- **Older weeks are never re-derived:** a week's total is Sleeper's season total minus earlier weeks, so once a later week has closed only the stored value is valid.
+  `--refinalize` on an old week used to overwrite week 1 with week 1 plus week 2; `week_totals` now returns the stored value for any week before the newest closed one.
+- **When a team will not add up:** `infer_lock_decisions.py --week N --dry-run` prints a "why" for each slot: Sleeper's total, what the best picks add to, and any slot
+  where Sleeper reported a value that is none of the player's games.
+- **Commissioner rulings:** when the league changes a total by hand, run
+  `python scripts/record_ruling.py --week 2 --roster 2 --total 375.75 --note "<reason>"` (add `--dry-run` first). It stores Sleeper's current total, marks the team
+  `ruling`, and records the gap to the NBA-truth locks as `explained_diff`. The week-end solve skips ruled teams and the health line counts them as proven.
+  Locks always stay NBA truth. Week 2 roster 2 (Folger): Jarace Walker was dropped by a waiver claim before the week closed, Sleeper showed an empty F slot and a
+  348.65 total, then the league voted to restore the win and the total became 375.75 (locks 370.35, ruling +5.40).
+- **Games-missed history:** `python scripts/build_absence_history.py [--season-id S]` rebuilds `player_absences` (one row per missed team game, kinds `missed`, `dnp`,
+  `after_last_game`) and the views `player_absence_runs` and `player_season_availability` for every season in `game_logs`. A missed game is injury, rest, a coach's
+  decision or (two-way players, capped at 50 NBA games) a G League assignment; the logs cannot tell them apart. Filter on `is_rotation` (average 18+ minutes over 10+
+  games) and expect two-way players to show as missed. Rebuild after any large game-log change.
+- **Preseason rows:** never use a `--lookback` that reaches before the season opener. The loader does not filter preseason ids (`0012...`), and 747 preseason box scores
+  once landed in `game_logs` as season 22026 (no fantasy scores, 26 games). They were deleted with `DELETE FROM game_logs WHERE game_id LIKE '001%'` and the absence
+  history rebuilt. The normal 2-day (10 on Monday) lookback never reaches preseason.
+- **Season-to-date check:** `python scripts/verify_season_to_date.py` (read-only, exit 1 on a FAIL) prints one line per layer: audit, games loaded, fantasy scores,
+  lock scores, lock flags vs stored locks, each closed week's reconciliation, 9 lock rows per team-week, and the current week so far. Run it after
+  `python scripts/run_daily.py` whenever the data was touched by hand. `python scripts/verify_app_screenshots.py --week N` compares a transcribed Sleeper app screen
+  (`data/app_screenshots/weekN_slots.csv`) with the stored locks, slot by slot.
+- **Trade tools:** `scripts/trade_check.py --block "<player>"` ranks every team by how much its best lineup gains from the player and lists the best one-for-one return;
+  `--get "A,B" --give "C"` prices one trade and finds the owner by name. Value is spike level (average plus 1.25 sd). Picks and FAAB are not modeled.
+- **League rules (Sleeper settings):** 1 keeper, 3 taxi slots for 2 years (vets allowed, deadline week 4), 3 draft rounds, pick trading on, 2 IR slots (Out and
+  not-DTD), FAAB budget 100, trade deadline week 20, no trade review.
+
+Known open items now: Portis Jr. double technical (game 0022600104); NBA corrections later than 10 days; unmatched crosswalk names; week 2 roster 2 locks for Walker,
+Risacher and Harden stay "not proven by a total" because of the ruling (scores match the app); player ages and draft data (a loader for `commonplayerinfo` is
+proposed, not built); dynasty value backtest over 5 seasons (proposed).
 
 ## Do NOT run casually
 

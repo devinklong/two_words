@@ -91,3 +91,34 @@ Updates 10/31/26 (these supersede the two week-end lines above):
 - Still open: Portis Jr. 'Double Technical' (game 0022600104) is unresolved by the scan; one NBA minutes total (Indiana) is off in the NBA's own box score
   (soft check, no fantasy effect); corrections the NBA makes more than 10 days after a game are not picked up; the flag and score pulls depend on the Mac
   being awake (see the runbook); the flag's first_seen_at is the first run that saw it, not the exact lock time.
+
+## 5. Updates 11/2-11/4/26
+
+Tests
+- **Week 1 against the app (16 screenshots):** 87 of 90 slot scores exact; the other 3 explained by NBA corrections (Daniels -2.00, Clingan -2.00, Reed +3.00). 10 of 10 teams add up.
+- **Week 2 against the app (11/2, 89 filled slots):** 89 of 89 match on player and score; nine teams' slots add to the league total; roster 2 slots add to 348.65 against a
+  league total of 375.75. 66 locks came from Sleeper flags, 21 from checksum, 3 unverified (roster 2).
+- **Season to date (11/4, `verify_season_to_date.py`):** audit clean, 107 played games all loaded and scored, 199 of 199 lock scores equal the official score, 149 of 149 Sleeper
+  flags match the stored locks, weeks 1 and 2 reconcile 10 of 10.
+
+Incidents
+- **11/1-11/2: a dropped player and a ruling.** Roster 2 dropped Walker through a waiver claim before week 2 closed. Sleeper counted the slot as 0 (stored 348.65), then the league
+  voted 8-0 to restore the win and Sleeper's total became 375.75. No lock choice can add up to a hand-set total, so rulings are recorded (`record_ruling.py`) as an explained
+  difference and ruled teams are skipped by the solve. The odd post-week Sleeper values on three roster 2 slots were stale snapshots; the app shows the real game scores.
+- **11/2: a refinalize of an old week corrupted stored totals.** `--refinalize` on week 1 after week 2 closed stored week 1 plus week 2. The solve now refuses to re-derive any
+  week before the newest closed one and returns the stored total.
+- **11/2: statistical lock guesses disabled where flags exist.** Nine week 2 `sleeper_frozen` rows were false locks; they were deleted and the guess now runs only without flag tables.
+- **11/2: injury feed over-counted.** 2,132 players were marked injured because `status` codes were treated as health. Only `injury_status` counts (115 listed after the fix).
+- **11/4: preseason games entered `game_logs`.** A 20-day lookback reached the preseason; 747 box scores (ids `001...`) had no fantasy scores and failed the audit. Deleted; do not use
+  a lookback that reaches before the opener. Also: roster size (a team with 6 players in game 0022600160, points and minutes matching) is now a note, not a failure.
+- **Absence history first cut was misleading.** Raw missed games for fringe and two-way players looked like injuries (players with 5 games played and 77 missed). The view now carries
+  average minutes and `is_rotation`; two-way and G League absences still look like misses.
+
+Additions to the chain
+- Sleeper injury spells (`sleeper_injury_spells`), dropped-player id map (`sleeper_player_ids`), games-missed history (`player_absences` and two views), commissioner ruling marker,
+  season-to-date verifier, app-screenshot checker, trading block mode in `trade_check.py`.
+
+Limits (new)
+- A hand-set league total cannot be proven by game scores; it is recorded, not derived.
+- Games-missed history cannot separate injury, rest, coach's decision and G League assignment; the Sleeper spells give cause only from 10/31/26 on.
+- No age, draft or contract data yet; dynasty value is not modeled. The league has 1 keeper, so age matters less than in a deep dynasty.
