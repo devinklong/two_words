@@ -167,6 +167,10 @@ def format_rows(rows):
             note = f"bar from {r['source']} stats"
         if r.get("hist_n"):
             note = (note + "; " if note else "") + f"{r['hist_n']} similar past locks"
+        lg = r.get("locked_game")
+        if lg:   # a locked player's other games change nothing: say which score is banked
+            note = (note + "; " if note else "") + ("this game IS the locked score" if lg[0] == r["game_id"]
+                                                    else f"banked {lg[1]:.2f} on {lg[2]:%m/%d}; this game does not count")
         lines.append(f"{'S' if r['starter'] else ' ':1} {r['name']:<24} {r['score']:>6.2f} {bar:>6} {gap:>6} "
                      f"{r['left']:>5.1f} {pct:>10}  {signal_label(r):<10} {lens_txt:<22} {r.get('slot') or '':<10} {note}")
     return lines
@@ -207,16 +211,17 @@ def recommend_slots(conn, rows, args, day):
 
     # --locked "Mitchell=PG,Zubac=C": players you already locked into a slot. Their slot is used up and their
     # remaining games no longer matter, so they are left out of the advice and out of the games-left counts.
-    notes, locked_by_sid = [], {}
+    notes, locked_by_sid, locked_info = [], {}, {}
     # Locks recorded with scripts/record_lock.py (table nba_lock_decisions) for this fantasy week count automatically.
     try:
         cur0 = conn.cursor()
-        cur0.execute("""SELECT d.sleeper_player_id, d.player_name, d.slot FROM nba_lock_decisions d
+        cur0.execute("""SELECT d.sleeper_player_id, d.player_name, d.slot, d.game_id, d.fantasy_score, d.game_date FROM nba_lock_decisions d
                        JOIN fantasy_weeks w ON w.season_id = d.season_id AND w.week_number = d.week_number
                        WHERE d.roster_id = %s AND d.season_id = %s AND %s BETWEEN w.week_start_date AND w.week_end_date""",
                      (args.roster_id, args.season_id, day))
-        for sid, nm, sl in cur0.fetchall():
+        for sid, nm, sl, lgid, lscore, ldate in cur0.fetchall():
             locked_by_sid[sid] = (nm, sl.rstrip("12") if sl.startswith("UTIL") else sl)
+            locked_info[sid] = (lgid, float(lscore), ldate)   # the game and score actually banked in that slot
         cur0.close()
         if locked_by_sid:
             notes.append(f"{len(locked_by_sid)} lock(s) read from nba_lock_decisions")
@@ -238,8 +243,12 @@ def recommend_slots(conn, rows, args, day):
     for r in rows:
         if r["sid"] in locked_by_sid:
             r["slot"] = f"locked {locked_by_sid[r['sid']][1]}"
+            if r["sid"] in locked_info:
+                r["locked_game"] = locked_info[r["sid"]]
     if locked_by_sid:
-        notes.append("Already locked: " + ", ".join(f"{nm}={sl}" for nm, sl in locked_by_sid.values()))
+        notes.append("Already locked: " + ", ".join(
+            f"{nm}={sl}" + (f" ({locked_info[sid][1]:.2f} on {locked_info[sid][2]:%m/%d})" if sid in locked_info else "")
+            for sid, (nm, sl) in locked_by_sid.items()))
 
     args.lens_state = {"roster": roster, "taxi": taxi, "locked": locked_by_sid, "out": out}   # reused by apply_roster_lens
     lockers = [r for r in rows if r["signal"] == "LOCK" and r["sid"] not in taxi and r["sid"] not in locked_by_sid]
