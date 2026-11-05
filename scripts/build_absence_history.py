@@ -8,7 +8,9 @@ For each player, season and team he played for, every completed team game inside
                           (this season) a current absence. The logs cannot tell these apart, so analyses keep them in their own column.
 Games before his first game with a team are never counted (the logs cannot tell a late arrival from an early injury).
 Views built on it: player_absence_runs (each continuous run of missed team games) and player_season_availability (per player, season, team:
-games played, missed, dnp, longest run, trailing games).
+games played, missed, dnp, longest run, trailing games, average minutes, is_rotation).
+CAUTION: a 'missed' game is an injury, rest or a coach's decision; the logs cannot tell them apart. Fringe players (a few games, low minutes) 'miss'
+most of the schedule for plain roster reasons, so injury analyses must filter on is_rotation (average minutes >= 18 over at least 10 games played; a few big-minute games by a two-way player must not make him a rotation player).
 
 Why a table and not a view: other projects (eredivisie_scout and the dynasty value work) read it by player id; the Sleeper injury spells
 (sleeper_injury_spells) add the cause and status from the day the feed started, this adds the five seasons before it.
@@ -38,8 +40,10 @@ DDL = [
     """CREATE OR REPLACE VIEW player_season_availability AS
        SELECT l.player_id, l.season_id, l.team_id, l.games_played,
               COALESCE(a.missed, 0) AS missed, COALESCE(a.dnp, 0) AS dnp, COALESCE(a.trailing, 0) AS trailing,
-              COALESCE(r.longest_run, 0) AS longest_run
-       FROM (SELECT player_id, season_id, team_id, count(*) AS games_played FROM game_logs WHERE minutes > 0 GROUP BY 1,2,3) l
+              COALESCE(r.longest_run, 0) AS longest_run,
+              l.avg_minutes, (l.avg_minutes >= 18 AND l.games_played >= 10) AS is_rotation
+       FROM (SELECT player_id, season_id, team_id, count(*) AS games_played, round(avg(minutes), 1) AS avg_minutes
+             FROM game_logs WHERE minutes > 0 GROUP BY 1,2,3) l
        LEFT JOIN (SELECT player_id, season_id, team_id,
                          count(*) FILTER (WHERE kind = 'missed') AS missed, count(*) FILTER (WHERE kind = 'dnp') AS dnp,
                          count(*) FILTER (WHERE kind = 'after_last_game') AS trailing
