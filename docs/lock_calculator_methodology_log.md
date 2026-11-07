@@ -100,6 +100,11 @@ Tests
   league total of 375.75. 66 locks came from Sleeper flags, 21 from checksum, 3 unverified (roster 2).
 - **Season to date (11/4, `verify_season_to_date.py`):** audit clean, 107 played games all loaded and scored, 199 of 199 lock scores equal the official score, 149 of 149 Sleeper
   flags match the stored locks, weeks 1 and 2 reconcile 10 of 10.
+- **Normal-scores assumption (11/7, `test_score_distribution.py`, 49,913 pool player-games over five seasons, in sample):** shape is close to normal (skew 0.31, excess
+  kurtosis 0.10; 2.9% of games above +2 sd against 2.3% for a normal curve; lower tier skew 0.41, 3.2%). At or above the bar, the share of locks beaten by a later game that
+  week was within 4.2 points of the normal model in every group and within 2.2 in most; the largest gap (3 games left, 0-5 above the bar: real 44.6% vs 48.7%, n 698) is about
+  2 standard errors and in the direction expected when a player misses a later game (the model assumes every later game is played). No group with 100+ cases was off by 5 points.
+  Conclusion: the normal model is adequate; no change. Not yet done: an out-of-sample version using only a player's earlier games.
 
 Incidents
 - **11/1-11/2: a dropped player and a ruling.** Roster 2 dropped Walker through a waiver claim before week 2 closed. Sleeper counted the slot as 0 (stored 348.65), then the league
