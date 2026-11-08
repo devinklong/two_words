@@ -175,7 +175,18 @@ def week_totals(cur, league, season_id, week, closed_weeks, dry, refresh=False):
 
 
 def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source, overwrite=False, keep=("manual",)):
-    """Insert one lock row with the model's view of that game; never overwrites an existing slot."""
+    """Insert one lock row with the model's view of that game; never overwrites an existing slot.
+    Returns False without touching anything when the row is already there and nothing would change. The model lookup below
+    reads game_lock_signal (~0.8 s per call), and this runs for every lock every day, which made the step take 214 s. A row
+    freezes the model's read at the time it was first written, so skipping an identical row loses nothing."""
+    cur.execute("""SELECT game_id, sleeper_player_id, nba_player_id, source, lock_bar FROM nba_lock_decisions
+                   WHERE league_id = %s AND roster_id = %s AND week_number = %s AND slot = %s""", (league, roster, week, slot))
+    have = cur.fetchone()
+    if have:
+        if not overwrite or have[3] in keep:
+            return False   # the insert below would do nothing
+        if have[0] == g["id"] and have[1] == pid and have[2] == nba and have[3] == source and have[4] is not None:
+            return False   # same lock already stored with its model read
     cur.execute("""SELECT g.fantasy_score, s.lock_bar, s.lock_signal, s.percentage_to_lock, s.tier, s.player_stats_source,
                           e.effective_games_remaining_in_week
                    FROM game_fantasy_scores_weekly_effective g
@@ -197,6 +208,7 @@ def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source
             source = EXCLUDED.source WHERE nba_lock_decisions.source <> ALL(%s)""" if overwrite else "DO NOTHING"),
         (league, roster, season_id, week, slot, pid, nba, name, g["id"], g["date"], m[0], m[1], m[2], m[3],
          m[4], m[5], m[6], source) + ((list(keep),) if overwrite else ()))
+    return True
 
 
 FIXED_SOURCES = ("manual", "sleeper_flag")   # rows no inference may change
