@@ -39,9 +39,12 @@
 -- resolve owner names via a join to sleeper_roster_labels_current at
 -- query time, not stored here.
 
-DROP VIEW IF EXISTS playoff_bracket_results;
-
-CREATE VIEW playoff_bracket_results AS
+-- PERFORMANCE (11/8/26): pivot, week22_results and week23_results are MATERIALIZED on purpose. Without it Postgres folds the
+-- seeding aggregates and the winner CASE expressions into the join conditions of the ~24 points_by_week lookups below, which makes
+-- the planner join those lookups on league_id alone. On the live database a plain count(*) then ran for 7+ minutes and held locks
+-- on every view in the chain. Materialized, each stage's roster ids are plain columns and the lookups are ordinary equality joins.
+-- Results are identical; nothing else was changed.
+CREATE OR REPLACE VIEW playoff_bracket_results AS
 WITH points_by_week AS (
     -- Most recent snapshot per (league_id, week, roster_id) -- same
     -- dedup logic sleeper_matchup_points_latest would provide, done
@@ -65,7 +68,7 @@ seeds AS (
     WHERE hmr.week <= 21
     GROUP BY hmr.league_id, hmr.roster_id
 ),
-pivot AS (
+pivot AS MATERIALIZED (
     -- One row per league, each seed's roster_id as its own column --
     -- makes every downstream join explicit and readable by seed number
     -- instead of chaining anonymous self-joins.
@@ -105,7 +108,7 @@ week22_pts AS (
     JOIN points_by_week pw8  ON pw8.league_id = p.league_id  AND pw8.week = 22  AND pw8.roster_id = p.r8
     JOIN points_by_week pw9  ON pw9.league_id = p.league_id  AND pw9.week = 22  AND pw9.roster_id = p.r9
 ),
-week22_results AS (
+week22_results AS MATERIALIZED (
     SELECT *,
         CASE WHEN pts3  >= pts6  THEN r3  ELSE r6  END AS w_3v6,  CASE WHEN pts3  >= pts6  THEN r6  ELSE r3  END AS l_3v6,
         CASE WHEN pts4  >= pts5  THEN r4  ELSE r5  END AS w_4v5,  CASE WHEN pts4  >= pts5  THEN r5  ELSE r4  END AS l_4v5,
@@ -137,7 +140,7 @@ week23_pts AS (
     JOIN points_by_week pwL710 ON pwL710.league_id = wr.league_id AND pwL710.week = 23 AND pwL710.roster_id = wr.l_7v10
     JOIN points_by_week pwL89  ON pwL89.league_id = wr.league_id  AND pwL89.week = 23  AND pwL89.roster_id = wr.l_8v9
 ),
-week23_results AS (
+week23_results AS MATERIALIZED (
     SELECT *,
         CASE WHEN pts1    >= ptsW45  THEN r1     ELSE w_4v5 END AS w_semi1, CASE WHEN pts1    >= ptsW45  THEN w_4v5 ELSE r1     END AS l_semi1,
         CASE WHEN pts2    >= ptsW36  THEN r2     ELSE w_3v6 END AS w_semi2, CASE WHEN pts2    >= ptsW36  THEN w_3v6 ELSE r2     END AS l_semi2,
