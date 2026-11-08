@@ -8,18 +8,18 @@
 -- >>> UPDATE THIS ROW AT THE START OF EACH NEW SEASON: <
 --   UPDATE current_season_config SET season_id = '22027', updated_at = now() WHERE id = 1;
 
-DROP TABLE IF EXISTS current_season_config CASCADE;
-
-CREATE TABLE current_season_config (
+-- Safe to re-run: no DROP. The old DROP ... CASCADE also dropped ownable_player_pool, game_lock_signal and nba_player_movers, and reset
+-- the season to 22026 mid-season.
+CREATE TABLE IF NOT EXISTS current_season_config (
     id         INTEGER PRIMARY KEY DEFAULT 1,
     season_id  TEXT NOT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT now(),
     CONSTRAINT single_row CHECK (id = 1)
 );
 
-INSERT INTO current_season_config (id, season_id) VALUES (1, '22026');
+INSERT INTO current_season_config (id, season_id) VALUES (1, '22026') ON CONFLICT (id) DO NOTHING;
 
-CREATE TABLE teams (
+CREATE TABLE IF NOT EXISTS teams (
     team_id INTEGER PRIMARY KEY,
     abbreviation VARCHAR(3) NOT NULL,
     full_name VARCHAR(50) NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE teams (
     year_founded INTEGER
 );
 
-CREATE TABLE nba_players (
+CREATE TABLE IF NOT EXISTS nba_players (
     player_id INTEGER PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
     first_name VARCHAR(50),

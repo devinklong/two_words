@@ -23,9 +23,9 @@
 -- already happened, where reproducing the real recorded outcome
 -- matters more than independent verification.
 
-DROP TABLE IF EXISTS sleeper_matchup_points_snapshots CASCADE;
-
-CREATE TABLE sleeper_matchup_points_snapshots (
+-- NO DROP, ever: this table is a change log of what Sleeper showed at the time, and Sleeper no longer serves that history.
+-- Dropping it deletes rows that cannot be re-fetched (4,095 on 11/8/26) and takes four reporting views with it.
+CREATE TABLE IF NOT EXISTS sleeper_matchup_points_snapshots (
     league_id       TEXT        NOT NULL,
     week            INTEGER     NOT NULL,
     roster_id       INTEGER     NOT NULL,

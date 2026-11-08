@@ -27,6 +27,8 @@ Full order:
   ownable_player_pool.sql
   lock_bar_function.sql
   game_lock_signal.sql
+  nba_lock_win_rate.sql
+  nba_lock_decision_outcomes.sql
 
 Each step is verified by checking directly whether the object it
 produces exists -- not by relying on psql's exit code (this project's
@@ -216,8 +218,9 @@ def verify_against_known_good():
     print(f"\nLOCK/HOLD/PASS split -- expected {EXPECTED_SPLIT}, got {actual_split}")
     print(f"Jokić lock_bar -- expected {EXPECTED_JOKIC_LOCK_BAR}, got {actual_jokic_lock_bar}")
 
+    # Loose on purpose: the split includes the live season, which grows every day. scripts/golden_check.py is the exact comparison.
     split_ok = all(
-        key in actual_split and abs(actual_split[key] - expected) < 0.1
+        key in actual_split and abs(actual_split[key] - expected) < 0.5
         for key, expected in EXPECTED_SPLIT.items()
     )
     jokic_ok = actual_jokic_lock_bar is not None and abs(actual_jokic_lock_bar - EXPECTED_JOKIC_LOCK_BAR) < 0.001
@@ -256,6 +259,7 @@ def main():
     run_step("models/lock_bar_function.sql", "lock_bar", "function")
     run_step("models/game_lock_signal.sql", "game_lock_signal", "view")
     run_step("models/nba_lock_win_rate.sql", "nba_lock_win_rate", "view")
+    run_step("models/nba_lock_decision_outcomes.sql", "nba_lock_decision_outcomes", "view")
 
     print("\nRunning final regression check against known-good values...")
     if not verify_against_known_good():

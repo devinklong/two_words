@@ -4,9 +4,9 @@
 -- Currently exposed as data only in game_lock_signal (not used in the
 -- decision) after a tested lock_bar penalty was found net-negative.
 
-DROP VIEW IF EXISTS player_injury_return_flags CASCADE;
-
-CREATE VIEW player_injury_return_flags AS
+-- No DROP ... CASCADE: game_lock_signal is built on this view, and CASCADE would silently drop it. CREATE OR REPLACE keeps the
+-- dependent in place; if the column list ever has to change, Postgres refuses loudly and the change goes through rebuild_lock_pipeline.py.
+CREATE OR REPLACE VIEW player_injury_return_flags AS
 WITH injury_gaps AS (
     SELECT player_id, team_id, game_date AS gap_date
     FROM gap_reasons
