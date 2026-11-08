@@ -1,3 +1,11 @@
+-- GUARD: this file drops views other views depend on. Run it only through scripts/rebuild_lock_pipeline.py, which passes
+-- -v rebuild_lock_pipeline=1 and then rebuilds everything downstream in order. Run alone, it would leave the lock signal missing.
+\if :{?rebuild_lock_pipeline}
+\else
+\echo 'REFUSING TO RUN: use python scripts/rebuild_lock_pipeline.py (needs psql 13+ for this guard)'
+\quit
+\endif
+
 -- Defines the ~150-210 player-season "ownable pool": mean + 1.25*stddev >= 35
 -- (ceiling-based, not raw average, so spike-capable players aren't missed —
 -- see methodology_notes.md's "Tobias Harris problem"). k and threshold are
@@ -89,7 +97,10 @@ JOIN nba_player_current_team c
   ON c.player_id = l.player_id AND c.team_id <> l.old_team AND c.team_id <> 0;
 -- END movers
 
-DROP VIEW IF EXISTS ownable_player_pool CASCADE;
+-- Explicit drops, dependents first (live check 11/8/26: game_lock_signal is the only view built on this one and nothing is built on it).
+-- A new dependent view will make the second drop fail loudly instead of being silently dropped by CASCADE.
+DROP VIEW IF EXISTS game_lock_signal;
+DROP VIEW IF EXISTS ownable_player_pool;
 
 CREATE VIEW ownable_player_pool AS
 WITH current_season_stats AS (

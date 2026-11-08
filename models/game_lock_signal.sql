@@ -1,3 +1,11 @@
+-- GUARD: this file drops views other views depend on. Run it only through scripts/rebuild_lock_pipeline.py, which passes
+-- -v rebuild_lock_pipeline=1 and then rebuilds everything downstream in order. Run alone, it would leave the lock signal missing.
+\if :{?rebuild_lock_pipeline}
+\else
+\echo 'REFUSING TO RUN: use python scripts/rebuild_lock_pipeline.py (needs psql 13+ for this guard)'
+\quit
+\endif
+
 -- Deployed LOCK/HOLD/PASS decision. LOCK requires clearing the GREATER of
 -- an absolute floor (35) and the player's own mean + 0.5*stddev -- a flat
 -- bar alone let high-average stars auto-LOCK on ordinary games, so the bar
@@ -35,7 +43,8 @@
 -- percentage_to_lock gets -- in case a differently-scoped correction is
 -- worth trying later.
 
-DROP VIEW IF EXISTS game_lock_signal CASCADE;
+-- Nothing is built on this view (live check 11/8/26), so no CASCADE: a new dependent will make this fail loudly.
+DROP VIEW IF EXISTS game_lock_signal;
 
 CREATE VIEW game_lock_signal AS
 SELECT

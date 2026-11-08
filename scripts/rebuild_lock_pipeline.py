@@ -109,7 +109,8 @@ def run_psql_quiet(sql_file):
     inspect it -- nothing is lost, it's just not dumped to the screen."""
     LOG_DIR.mkdir(exist_ok=True)
     log_path = LOG_DIR / f"{Path(sql_file).name}.log"
-    result = subprocess.run(["psql", PGCONN, "-f", sql_file], capture_output=True, text=True)
+    # -v rebuild_lock_pipeline=1 lifts the guard at the top of the files that drop views with dependents (they refuse to run alone)
+    result = subprocess.run(["psql", PGCONN, "-v", "rebuild_lock_pipeline=1", "-f", sql_file], capture_output=True, text=True)
     log_path.write_text(result.stdout + result.stderr)
     return log_path
 
