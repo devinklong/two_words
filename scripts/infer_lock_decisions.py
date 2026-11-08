@@ -179,14 +179,17 @@ def record(cur, league, roster, season_id, week, slot, pid, nba, name, g, source
     Returns False without touching anything when the row is already there and nothing would change. The model lookup below
     reads game_lock_signal (~0.8 s per call), and this runs for every lock every day, which made the step take 214 s. A row
     freezes the model's read at the time it was first written, so skipping an identical row loses nothing."""
-    cur.execute("""SELECT game_id, sleeper_player_id, nba_player_id, source, lock_bar FROM nba_lock_decisions
+    cur.execute("""SELECT game_id, sleeper_player_id, nba_player_id, source, lock_bar, now() - recorded_at > interval '2 days' FROM nba_lock_decisions
                    WHERE league_id = %s AND roster_id = %s AND week_number = %s AND slot = %s""", (league, roster, week, slot))
     have = cur.fetchone()
     if have:
         if not overwrite or have[3] in keep:
             return False   # the insert below would do nothing
-        if have[0] == g["id"] and have[1] == pid and have[2] == nba and have[3] == source and have[4] is not None:
-            return False   # same lock already stored with its model read
+        if have[0] == g["id"] and have[1] == pid and have[2] == nba and have[3] == source and (have[4] is not None or have[5]):
+            # Same lock already stored. A missing model read (a player outside the ownable pool has no game_lock_signal row, so
+            # 55 locks on 11/8/26 never get one) is retried for 2 days after the lock was first recorded, then left alone
+            # instead of costing ~0.8 s per row on every daily run.
+            return False
     cur.execute("""SELECT g.fantasy_score, s.lock_bar, s.lock_signal, s.percentage_to_lock, s.tier, s.player_stats_source,
                           e.effective_games_remaining_in_week
                    FROM game_fantasy_scores_weekly_effective g
