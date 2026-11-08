@@ -1,3 +1,11 @@
+-- GUARD: this file drops views that other views depend on. Run it only through scripts/rebuild_lock_pipeline.py, which passes
+-- -v rebuild_lock_pipeline=1 and rebuilds everything downstream in order. Run alone, it would leave the lock signal missing.
+\if :{?rebuild_lock_pipeline}
+\else
+\echo 'REFUSING TO RUN: use python scripts/rebuild_lock_pipeline.py (needs psql 13+ for this guard)'
+\quit
+\endif
+
 -- Fits a saturating hold-value curve, hold_wins_pct(k) = a*(1-(1-b)^k), per
 -- player tier -- "if this game doesn't clear the lock bar, what's the
 -- chance a later game this week beats it, given k games remain?" Feeds a
@@ -7,23 +15,17 @@
 -- until that script runs, this file's own tail verification queries below
 -- will error with "No fitted curve," which is expected, not a bug.
 
-DROP TABLE IF EXISTS hold_value_curve_params_by_tier CASCADE;
-
-CREATE TABLE hold_value_curve_params_by_tier (
+-- No drop: the fitted curves stay in place, so the function below never runs against an empty table, and
+-- scripts/fit_hold_value_curve_by_tier.py (next step of the rebuild) refreshes them.
+CREATE TABLE IF NOT EXISTS hold_value_curve_params_by_tier (
     tier      TEXT PRIMARY KEY,
     a         NUMERIC NOT NULL,
     b         NUMERIC NOT NULL,
     fitted_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
--- CREATE OR REPLACE can't change a function's parameter types (would
--- overload instead), so the old BIGINT version is dropped explicitly.
--- CASCADE: game_fantasy_scores_weekly_percentage_to_lock (below) and
--- game_lock_signal.sql both transitively depend on this function -- without
--- CASCADE the drop fails outright whenever either exists, which then makes
--- every statement below silently run against the STALE pre-edit objects.
--- Always rerun game_lock_signal.sql immediately after this file.
-DROP FUNCTION IF EXISTS hold_win_probability_by_tier(BIGINT, TEXT) CASCADE;
+-- The old BIGINT version of this function was dropped here with CASCADE. It no longer exists, so that statement did nothing and is
+-- removed. CREATE OR REPLACE below keeps the dependent view in place (same signature).
 
 CREATE OR REPLACE FUNCTION hold_win_probability_by_tier(games_remaining NUMERIC, p_tier TEXT)
 RETURNS NUMERIC AS $$
@@ -47,8 +49,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- CASCADE here for the same reason as above -- game_lock_signal depends on this view.
-DROP VIEW IF EXISTS game_fantasy_scores_weekly_percentage_to_lock CASCADE;
+-- Explicit drops, dependents first (live check 11/8/26: game_lock_signal is the only view built on this one).
+-- A new dependent makes the second drop fail loudly instead of being silently dropped.
+DROP VIEW IF EXISTS game_lock_signal;
+DROP VIEW IF EXISTS game_fantasy_scores_weekly_percentage_to_lock;
 
 CREATE VIEW game_fantasy_scores_weekly_percentage_to_lock AS
 SELECT

@@ -1,3 +1,11 @@
+-- GUARD: this file drops views that other views depend on. Run it only through scripts/rebuild_lock_pipeline.py, which passes
+-- -v rebuild_lock_pipeline=1 and rebuilds everything downstream in order. Run alone, it would leave the lock signal missing.
+\if :{?rebuild_lock_pipeline}
+\else
+\echo 'REFUSING TO RUN: use python scripts/rebuild_lock_pipeline.py (needs psql 13+ for this guard)'
+\quit
+\endif
+
 -- Extracts this league's Sleeper-declared scoring settings into typed,
 -- named columns keyed by season_id (matches game_logs.season_id format,
 -- e.g. '22024'), so game_fantasy_scores can join on season_id directly
@@ -27,13 +35,9 @@
 -- are used in game_fantasy_scores, since game_logs has no columns to
 -- support them (see game_fantasy_scores_view.sql header).
 
--- CASCADE: game_fantasy_scores now joins against this view (and
--- game_fantasy_scores_weekly / _weekly_context / _weekly_full all
--- depend on game_fantasy_scores in turn), so this one drop takes out
--- the whole downstream chain. Rebuild order after running this file:
--- game_fantasy_scores_view.sql, then game_fantasy_scores_weekly_view.sql,
--- then game_fantasy_scores_weekly_context_view.sql (also recreates
--- game_fantasy_scores_weekly_full).
+-- CASCADE is deliberate here: this is the root of the lock pipeline, so the drop takes out the whole downstream tree on purpose
+-- (11 views, listed in EXPECTED_ROOT_DEPENDENTS in scripts/rebuild_lock_pipeline.py). rebuild_lock_pipeline.py checks that list
+-- BEFORE running this file and stops if a view outside it has been built on this one, then rebuilds the full tree in order.
 DROP VIEW IF EXISTS sleeper_scoring_constants CASCADE;
 
 CREATE VIEW sleeper_scoring_constants AS

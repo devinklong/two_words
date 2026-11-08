@@ -1,3 +1,11 @@
+-- GUARD: this file drops views that other views depend on. Run it only through scripts/rebuild_lock_pipeline.py, which passes
+-- -v rebuild_lock_pipeline=1 and rebuilds everything downstream in order. Run alone, it would leave the lock signal missing.
+\if :{?rebuild_lock_pipeline}
+\else
+\echo 'REFUSING TO RUN: use python scripts/rebuild_lock_pipeline.py (needs psql 13+ for this guard)'
+\quit
+\endif
+
 -- Computes fantasy_score per game per player, using the league's exact
 -- Sleeper scoring settings — pulled from sleeper_scoring_constants
 -- (sourced from sleeper_leagues.scoring_settings) instead of hardcoded
@@ -51,6 +59,8 @@
 -- to score slightly higher here than the real Sleeper result; that gap
 -- is now closed for any game covered by the backfill.
 
+-- CASCADE is deliberate: game_fantasy_scores is the base of the lock pipeline tree, which rebuild_lock_pipeline.py drops and
+-- recreates whole (it checks for unexpected dependent views before running this file).
 DROP VIEW IF EXISTS game_fantasy_scores CASCADE;
 
 CREATE VIEW game_fantasy_scores AS

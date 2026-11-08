@@ -16,6 +16,7 @@ running them independently (in either order) kept failing: each one
 only knew about half the tree.
 
 Full order:
+  sleeper_scoring_constants_view.sql
   game_fantasy_scores_view.sql
   player_season_fantasy_stats_view.sql
   player_tiers.sql
@@ -233,8 +234,47 @@ def verify_against_known_good():
     return split_ok and jokic_ok
 
 
+# Views that legitimately sit below sleeper_scoring_constants (the root of the tree). The root files drop them with CASCADE on purpose;
+# every one of them is recreated by a step in main(). If a NEW view gets built on this tree, add it to the rebuild and to this list.
+EXPECTED_ROOT_DEPENDENTS = {
+    "game_fantasy_scores", "game_fantasy_scores_weekly", "game_fantasy_scores_weekly_context",
+    "game_fantasy_scores_weekly_full", "game_fantasy_scores_weekly_percentage_to_lock", "game_lock_signal",
+    "nba_lock_win_rate", "nba_player_tiers_in_use", "ownable_player_pool", "player_season_fantasy_stats", "player_tiers",
+}
+
+
+def check_no_unexpected_dependents():
+    """Stops BEFORE any drop if a view outside EXPECTED_ROOT_DEPENDENTS is built on the root, since CASCADE would delete it silently."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        WITH RECURSIVE dep(oid, name) AS (
+            SELECT c.oid, c.relname::text FROM pg_class c
+             WHERE c.relname = 'sleeper_scoring_constants' AND c.relnamespace = 'public'::regnamespace
+            UNION
+            SELECT dc.oid, dc.relname::text FROM dep
+              JOIN pg_depend d ON d.refobjid = dep.oid AND d.classid = 'pg_rewrite'::regclass
+              JOIN pg_rewrite r ON r.oid = d.objid
+              JOIN pg_class dc ON dc.oid = r.ev_class
+             WHERE dc.oid <> dep.oid)
+        SELECT name FROM dep""")
+    found = {row[0] for row in cur.fetchall()} - {"sleeper_scoring_constants"}
+    cur.close()
+    conn.close()
+    extras = sorted(found - EXPECTED_ROOT_DEPENDENTS)
+    if extras:
+        print("STOP: these views are built on the lock pipeline tree but are not in the rebuild, and the root drop would delete them:")
+        for name in extras:
+            print(f"  {name}")
+        print("Add each to the rebuild order and to EXPECTED_ROOT_DEPENDENTS, then rerun. Nothing was dropped.")
+        sys.exit(1)
+    print(f"  checked: {len(found)} dependent views, all expected.")
+
+
 def main():
     # --- game_fantasy_scores tree ---
+    check_no_unexpected_dependents()
+    run_step("schema/views/sleeper_scoring_constants_view.sql", "sleeper_scoring_constants", "view")
     run_step("schema/views/game_fantasy_scores_view.sql", "game_fantasy_scores", "view")
     run_step("schema/views/player_season_fantasy_stats_view.sql", "player_season_fantasy_stats", "view")
     run_step("models/player_tiers.sql", "player_tiers", "view")
