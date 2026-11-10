@@ -367,6 +367,18 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
     for (roster, slot), gid in found.items():
         rows[roster].setdefault(slot, (gid, "sleeper_frozen"))
     written = 0
+    # A slot that was never locked takes the game of the player's TEAM that ended the week. If he sat that game out, Sleeper
+    # scores the slot 0 (week 3, roster 4: Sabonis played 11/2, 11/4 and 11/6, missed 11/8, and the team total only adds up
+    # with his slot at 0). So each unlocked slot also gets that missed game as a 0.00 candidate; the total decides.
+    cur.execute("SELECT week_start_date FROM fantasy_weeks WHERE season_id = %s AND week_number = %s", (args.season_id, week))
+    week_start = cur.fetchone()[0]
+    cur.execute("""SELECT DISTINCT ON (team_id) team_id, game_id, game_date FROM game_logs
+                   WHERE season_id = %s AND game_date BETWEEN %s AND %s ORDER BY team_id, game_date DESC, game_id DESC""",
+                (args.season_id, week_start, week_end))
+    team_last = {t: (gid, gd) for t, gid, gd in cur.fetchall()}
+    cur.execute("""SELECT DISTINCT ON (player_id) player_id, team_id FROM game_logs
+                   WHERE season_id = %s AND game_date <= %s ORDER BY player_id, game_date DESC""", (args.season_id, week_end))
+    player_team = dict(cur.fetchall())
     for roster in sorted(last_starters):
         if roster not in totals:
             continue
@@ -384,6 +396,10 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
             have = {} if args.recheck else rows[roster]
             if have.get(slot, (None, None))[1] in FIXED_SOURCES:
                 wk = [x for x in wk if x["id"] == have[slot][0]] or wk   # your own entry, or a lock Sleeper itself reports, is fixed
+            else:
+                missed = team_last.get(player_team.get(nba))
+                if missed and (not wk or missed[1] > wk[-1]["date"]):
+                    wk = wk + [{"id": missed[0], "date": missed[1], "score": 0, "dnp": True}]
             prior = len(wk) - 1
             if slot in have and have[slot][1] != "auto_final":
                 prior = next((k for k, x in enumerate(wk) if x["id"] == have[slot][0]), prior)
@@ -444,7 +460,7 @@ def finalize_week(cur, args, league, week, games, last_starters, xw, closed_week
                 continue
             g = wk[sol[i]]
             pid, nba, name = names[i]
-            print(f"      {slot:<5} {name}  {float(g['score']):.2f} on {g['date']}  [{source}]")
+            print(f"      {slot:<5} {name}  {float(g['score']):.2f} on {g['date']}{' (did not play; unlocked slot scored 0)' if g.get('dnp') else ''}  [{source}]")
             written += 1
             if not args.dry_run:
                 record(cur, league, roster, args.season_id, week, slot, pid, nba, name, g, source, overwrite=True, keep=FIXED_SOURCES)
