@@ -11,9 +11,10 @@
 -- correctly "current" under this definition the moment it exists,
 -- regardless of matchup/week status.
 
-DROP VIEW IF EXISTS sleeper_current_league CASCADE;
+-- No DROP ... CASCADE: CREATE OR REPLACE keeps every view built on this one in place, so re-running this file is safe. If a column ever has to
+-- change name, type or position, Postgres refuses with an error; drop the dependents by hand in that case (never with CASCADE).
 
-CREATE VIEW sleeper_current_league AS
+CREATE OR REPLACE VIEW sleeper_current_league AS
 SELECT sl.*
 FROM sleeper_leagues sl
 WHERE NOT EXISTS (
@@ -33,9 +34,7 @@ WHERE NOT EXISTS (
 -- with nba_player_id/player_name NULL instead of silently dropping the
 -- roster slot — surfaces the gap instead of hiding it.
 
-DROP VIEW IF EXISTS roster_ownership CASCADE;
-
-CREATE VIEW roster_ownership AS
+CREATE OR REPLACE VIEW roster_ownership AS
 SELECT
     sr.league_id,
     sr.roster_id,

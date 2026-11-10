@@ -4,9 +4,10 @@
 -- multiple snapshots per roster/week; this is always "whatever the
 -- final recorded value was."
 
-DROP VIEW IF EXISTS sleeper_roster_labels_current CASCADE;
+-- No DROP ... CASCADE: CREATE OR REPLACE keeps every view built on this one in place, so re-running this file is safe. If a column ever has to
+-- change name, type or position, Postgres refuses with an error; drop the dependents by hand in that case (never with CASCADE).
 
-CREATE VIEW sleeper_roster_labels_current AS
+CREATE OR REPLACE VIEW sleeper_roster_labels_current AS
 SELECT sr.league_id, sr.roster_id, su.display_name AS current_owner_name
 FROM sleeper_rosters sr
 LEFT JOIN sleeper_users su ON su.league_id = sr.league_id AND su.user_id = sr.owner_id;
@@ -43,9 +44,7 @@ LEFT JOIN sleeper_users su ON su.league_id = sr.league_id AND su.user_id = sr.ow
 -- unplayed season. Self-updating, no hardcoded league_id list to
 -- maintain.
 
-DROP VIEW IF EXISTS historical_matchup_results CASCADE;
-
-CREATE VIEW historical_matchup_results AS
+CREATE OR REPLACE VIEW historical_matchup_results AS
 SELECT
     fm.league_id,
     fm.week,
@@ -76,9 +75,7 @@ LEFT JOIN sleeper_roster_labels_current rl2
 -- fantasy_matchup_results' standings query, sourced from
 -- historical_matchup_results instead.
 
-DROP VIEW IF EXISTS historical_standings CASCADE;
-
-CREATE VIEW historical_standings AS
+CREATE OR REPLACE VIEW historical_standings AS
 SELECT sl.season, hmr.owner_name,
        COUNT(*) FILTER (WHERE hmr.result = 'W') AS wins,
        COUNT(*) FILTER (WHERE hmr.result = 'L') AS losses,

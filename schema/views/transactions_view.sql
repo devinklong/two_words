@@ -15,9 +15,10 @@
 -- correctly excludes SQL NULL, JSON null, and non-object types in one
 -- check.
 
-DROP VIEW IF EXISTS transaction_players CASCADE;
+-- No DROP ... CASCADE: CREATE OR REPLACE keeps every view built on this one in place, so re-running this file is safe. If a column ever has to
+-- change name, type or position, Postgres refuses with an error; drop the dependents by hand in that case (never with CASCADE).
 
-CREATE VIEW transaction_players AS
+CREATE OR REPLACE VIEW transaction_players AS
 SELECT
     t.transaction_id,
     t.league_id,
@@ -58,9 +59,7 @@ WHERE jsonb_typeof(t.drops) = 'object';
 -- transaction. See historical_matchup_results_view.sql's architecture
 -- note and sleeper_roster_labels_current for the display-layer split.
 
-DROP VIEW IF EXISTS transaction_players_detail CASCADE;
-
-CREATE VIEW transaction_players_detail AS
+CREATE OR REPLACE VIEW transaction_players_detail AS
 SELECT
     tp.transaction_id,
     tp.league_id,
@@ -85,9 +84,7 @@ LEFT JOIN nba_players p
 -- happened if ownership ever changed since. Everything else in this
 -- view is unaffected by and independent of the label.
 
-DROP VIEW IF EXISTS transaction_players_detail_labeled CASCADE;
-
-CREATE VIEW transaction_players_detail_labeled AS
+CREATE OR REPLACE VIEW transaction_players_detail_labeled AS
 SELECT
     tpd.*,
     rl.current_owner_name AS owner_name
