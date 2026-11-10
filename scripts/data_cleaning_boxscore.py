@@ -16,6 +16,24 @@ a separate scoreboard call, passed in the same way as before.
 
 import pandas as pd
 
+
+def parse_minutes(v):
+    """V3's "MM:SS" text -> whole minutes, ROUNDED to the nearest minute (30 seconds or more rounds up).
+
+    game_logs.minutes is INTEGER (confirmed 8/10/26 via a real insert failure on '31:39'). Until 11/9/26 this dropped the
+    seconds, which made every 2026-27 row about half a minute low: 68,852 minutes in game_logs against the NBA's own 70,480
+    for the same games, while 2021-22 to 2025-26 (loaded from PlayerGameLog, which is already rounded) agree with the NBA
+    within 0.03%. Rounding keeps new games on the same footing as those seasons. Rows stored before the fix are corrected by
+    scripts/fix_truncated_minutes.py."""
+    if v is None or (isinstance(v, float) and pd.isna(v)) or v == "":
+        return None
+    s = str(v)
+    if ":" not in s:
+        return int(round(float(s)))
+    whole, seconds = s.split(":", 1)
+    return int(float(whole)) + (1 if float(seconds) >= 30 else 0)
+
+
 def clean_boxscore(player_stats_df, team_stats_df, game_id, game_date, season_id,
                     home_team_id, visitor_team_id):
     df = player_stats_df.copy()
@@ -59,21 +77,7 @@ def clean_boxscore(player_stats_df, team_stats_df, game_id, game_date, season_id
         "foulsPersonal": "pf", "points": "pts", "plusMinusPoints": "plus_minus",
     })
 
-    # game_logs.minutes is INTEGER -- confirmed 8/10/26 the hard way, via
-    # a real insert failure ("invalid input syntax for type integer:
-    # '31:39'"). V3's raw format is "MM:SS" (minutes:seconds); the
-    # original PlayerGameLog-based backfill apparently already produced
-    # clean whole-minute values, so this mismatch never surfaced until
-    # box scores were introduced. Seconds are dropped (floor to whole
-    # minutes), not rounded -- matches the simplest reading of "minutes
-    # played" an INTEGER column implies.
-    def _parse_minutes(v):
-        if v is None or (isinstance(v, float) and pd.isna(v)) or v == "":
-            return None
-        s = str(v)
-        return int(s.split(":")[0]) if ":" in s else int(float(s))
-
-    df["minutes"] = df["minutes"].apply(_parse_minutes)
+    df["minutes"] = df["minutes"].apply(parse_minutes)
 
     return df[[
         "game_id", "player_id", "team_id", "opponent_team_id", "season_id",
